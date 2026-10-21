@@ -25,20 +25,18 @@ import (
 	"github.com/Miwm64/peekai/internal/hotkey"
 	"github.com/Miwm64/peekai/internal/ocr"
 	"github.com/Miwm64/peekai/internal/pipeline"
+	"github.com/Miwm64/peekai/internal/ui"
 	"github.com/Miwm64/peekai/internal/ui/console"
+	"github.com/Miwm64/peekai/internal/ui/overlay"
 )
 
 var version = "dev"
 
 func main() {
-	// Global hotkeys need the OS main thread (macOS event loop); run the app
-	// on a goroutine while mainthread owns it.
-	mainthread.Init(func() {
-		if err := run(); err != nil {
-			fmt.Fprintln(os.Stderr, "peekai:", err)
-			os.Exit(1)
-		}
-	})
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "peekai:", err)
+		os.Exit(1)
+	}
 }
 
 func run() error {
@@ -48,6 +46,7 @@ func run() error {
 	mode := flag.String("mode", "", "override config mode: image | ocr")
 	promptName := flag.String("prompt", "", "override the active prompt (name from prompts.list)")
 	out := flag.String("out", "", "with -once: also save the screenshot sent to this PNG file")
+	useConsole := flag.Bool("console", false, "print results in the terminal instead of on-screen windows")
 	flag.Parse()
 
 	if *showVersion {
@@ -88,11 +87,23 @@ func run() error {
 	if *once {
 		return runOnce(ctx, cfg, *out)
 	}
-	err = runHotkeys(ctx, cfg)
-	if errors.Is(err, context.Canceled) {
-		return nil // Ctrl+C
+
+	listen := func(presenter ui.Presenter) error {
+		err := runHotkeys(ctx, cfg, presenter)
+		if errors.Is(err, context.Canceled) {
+			return nil // Ctrl+C
+		}
+		return err
 	}
-	return err
+	// Global hotkeys and windows both need the OS main thread (the macOS
+	// event loop), so the UI owns it and the app runs alongside.
+	if *useConsole {
+		mainthread.Init(func() { err = listen(console.New(os.Stdout)) })
+		return err
+	}
+	ov := overlay.New(cfg.UI)
+	ov.Run(func() error { return listen(ov) }) // exits the process when done
+	return nil
 }
 
 // build creates the pipeline and the AI provider it uses.
@@ -109,7 +120,7 @@ func build(cfg config.Config) (pipeline.Pipeline, ai.Provider, error) {
 }
 
 // runHotkeys keeps running and reacts to the global hotkeys.
-func runHotkeys(ctx context.Context, cfg config.Config) error {
+func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter) error {
 	p, provider, err := build(cfg)
 	if err != nil {
 		return err
@@ -123,7 +134,7 @@ func runHotkeys(ctx context.Context, cfg config.Config) error {
 	c := app.New(cfg, app.Deps{
 		Pipeline:  p,
 		NewOCR:    func() (pipeline.Recognizer, error) { return ocr.New(cfg.OCR, provider) },
-		UI:        console.New(os.Stdout),
+		UI:        presenter,
 		Clipboard: clipboard.WriteAll,
 	})
 
