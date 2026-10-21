@@ -125,7 +125,7 @@ func Default() Config {
 		AI: AI{
 			Provider:   "ollama",
 			Model:      "qwen2.5vl:7b",
-			Timeout:    Duration(60 * time.Second),
+			Timeout:    Duration(2 * time.Minute), // local models can take >60s on first load
 			MaxImagePx: 1600,
 		},
 		Prompts: Prompts{
