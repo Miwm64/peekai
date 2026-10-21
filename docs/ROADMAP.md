@@ -49,10 +49,12 @@ Done when: `peekai --once` writes a PNG on all 3 OSes (macOS: Screen Recording p
 
 ## 3. AI providers — `feat/ai`
 - `feat(ai): add Provider interface and Request type`
-- `feat(ai): add openai-compatible provider (Ollama, LM Studio, OpenAI, OpenRouter, Groq, Gemini)`
-- `feat(ai): add anthropic provider`
-- `feat(ai): read api key from env var named in config`
-- `test(ai): add httptest servers for both providers`
+- `feat(ai): add openai-compatible chat completions client`
+- `feat(ai): add ollama, routerai and grok presets`
+- `feat(config): default to ollama provider preset`
+- `test(ai): cover requests, auth, errors and presets with httptest`
+
+Later: more presets (OpenAI, OpenRouter, Groq, Gemini) are one line each; Anthropic needs its own client.
 
 ## 4. Pipeline — `feat/pipeline`
 - `feat(pipeline): run capture → ai in image mode`
