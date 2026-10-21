@@ -117,3 +117,25 @@ func TestLoadReportsPath(t *testing.T) {
 		t.Errorf("err = %v, want it to mention %s", err, path)
 	}
 }
+
+func TestPathFor(t *testing.T) {
+	wd := func() (string, error) { return filepath.FromSlash("/work/peekai"), nil }
+	tests := []struct {
+		name, exe, want string
+	}{
+		{"installed binary", "/opt/peekai/peekai", "/opt/peekai/config.json"},
+		{"windows-style dir", "/apps/peekai/peekai.exe", "/apps/peekai/config.json"},
+		{"go run", "/tmp/go-build123/b001/exe/peekai", "/work/peekai/config.json"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := pathFor(filepath.FromSlash(tt.exe), wd)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want := filepath.FromSlash(tt.want); got != want {
+				t.Errorf("path = %s, want %s", got, want)
+			}
+		})
+	}
+}
