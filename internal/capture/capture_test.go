@@ -10,22 +10,28 @@ func TestRectFor(t *testing.T) {
 	right := image.Rect(1920, 0, 3840, 1440)
 	displays := []image.Rectangle{primary, right}
 
+	onRight := image.Pt(2500, 700)
 	tests := []struct {
-		display string
-		want    image.Rectangle
-		wantErr bool
+		name, display string
+		mouse         image.Point
+		mouseOK       bool
+		want          image.Rectangle
+		wantErr       bool
 	}{
-		{"active", primary, false},
-		{"all", image.Rect(0, 0, 3840, 1440), false},
-		{"0", primary, false},
-		{"1", right, false},
-		{"2", image.Rectangle{}, true},
-		{"-1", image.Rectangle{}, true},
-		{"left", image.Rectangle{}, true},
+		{"active follows mouse", "active", onRight, true, right, false},
+		{"active on primary", "active", image.Pt(10, 10), true, primary, false},
+		{"active, mouse unknown", "active", onRight, false, primary, false},
+		{"active, mouse off-screen", "active", image.Pt(-500, 0), true, primary, false},
+		{"all", "all", onRight, true, image.Rect(0, 0, 3840, 1440), false},
+		{"index 0", "0", onRight, true, primary, false},
+		{"index 1", "1", image.Pt(10, 10), true, right, false},
+		{"index too big", "2", onRight, true, image.Rectangle{}, true},
+		{"negative", "-1", onRight, true, image.Rectangle{}, true},
+		{"name", "left", onRight, true, image.Rectangle{}, true},
 	}
 	for _, tt := range tests {
-		t.Run(tt.display, func(t *testing.T) {
-			got, err := rectFor(tt.display, displays)
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := rectFor(tt.display, displays, tt.mouse, tt.mouseOK)
 			if (err != nil) != tt.wantErr {
 				t.Fatalf("err = %v, wantErr %v", err, tt.wantErr)
 			}
@@ -37,7 +43,7 @@ func TestRectFor(t *testing.T) {
 }
 
 func TestRectForNoDisplays(t *testing.T) {
-	if _, err := rectFor("active", nil); err == nil {
+	if _, err := rectFor("active", nil, image.Point{}, false); err == nil {
 		t.Error("want error with no displays")
 	}
 }

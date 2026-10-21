@@ -12,15 +12,22 @@ type Capturer interface {
 	Capture(ctx context.Context) (image.Image, error)
 }
 
-// rectFor picks the area to capture from the display bounds.
-// "active" is the primary display for now; following the cursor needs the
-// UI layer and comes later.
-func rectFor(display string, bounds []image.Rectangle) (image.Rectangle, error) {
+// rectFor picks the area to capture from the display bounds. "active" is
+// the display under the mouse (the primary one if the mouse position is
+// unknown).
+func rectFor(display string, bounds []image.Rectangle, mouse image.Point, mouseOK bool) (image.Rectangle, error) {
 	if len(bounds) == 0 {
 		return image.Rectangle{}, fmt.Errorf("no active displays found")
 	}
 	switch display {
 	case "active":
+		if mouseOK {
+			for _, b := range bounds {
+				if mouse.In(b) {
+					return b, nil
+				}
+			}
+		}
 		return bounds[0], nil
 	case "all":
 		r := bounds[0]
