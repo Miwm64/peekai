@@ -1,0 +1,7 @@
+extends:
+  - "@commitlint/config-conventional"
+rules:
+  scope-enum:
+    - 2
+    - always
+    - [config, capture, ocr, ai, pipeline, hotkey, app, ui, popup, ticker, tray, ci, deps, docs, release]
