@@ -4,37 +4,50 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"image"
 	"image/png"
+	"maps"
 	"os"
 	"os/signal"
+	"slices"
 	"time"
 
+	"github.com/atotto/clipboard"
+	"golang.design/x/hotkey/mainthread"
+
 	"github.com/Miwm64/peekai/internal/ai"
+	"github.com/Miwm64/peekai/internal/app"
 	"github.com/Miwm64/peekai/internal/capture"
 	"github.com/Miwm64/peekai/internal/config"
+	"github.com/Miwm64/peekai/internal/hotkey"
 	"github.com/Miwm64/peekai/internal/ocr"
 	"github.com/Miwm64/peekai/internal/pipeline"
+	"github.com/Miwm64/peekai/internal/ui/console"
 )
 
 var version = "dev"
 
 func main() {
-	if err := run(); err != nil {
-		fmt.Fprintln(os.Stderr, "peekai:", err)
-		os.Exit(1)
-	}
+	// Global hotkeys need the OS main thread (macOS event loop); run the app
+	// on a goroutine while mainthread owns it.
+	mainthread.Init(func() {
+		if err := run(); err != nil {
+			fmt.Fprintln(os.Stderr, "peekai:", err)
+			os.Exit(1)
+		}
+	})
 }
 
 func run() error {
 	configPath := flag.String("config", "", "path to config.json (default: next to the peekai executable)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	once := flag.Bool("once", false, "analyze the screen once, print the answer and exit")
-	mode := flag.String("mode", "", "override config mode for -once: image | ocr")
-	promptName := flag.String("prompt", "", "override the active prompt for -once (name from prompts.list)")
-	out := flag.String("out", "", "also save the screenshot sent by -once to this PNG file")
+	mode := flag.String("mode", "", "override config mode: image | ocr")
+	promptName := flag.String("prompt", "", "override the active prompt (name from prompts.list)")
+	out := flag.String("out", "", "with -once: also save the screenshot sent to this PNG file")
 	flag.Parse()
 
 	if *showVersion {
@@ -57,37 +70,77 @@ func run() error {
 	if created {
 		fmt.Println("created default config:", path)
 	}
+	if *mode != "" {
+		cfg.Mode = *mode
+	}
+	if *promptName != "" {
+		cfg.Prompts.Active = *promptName
+	}
+	if err := cfg.Validate(); err != nil {
+		return err
+	}
 	fmt.Printf("config: %s (mode=%s, output=%s, provider=%s, model=%s)\n",
 		path, cfg.Mode, cfg.Output, cfg.AI.Provider, cfg.AI.Model)
 
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
+	defer stop()
+
 	if *once {
-		if *mode != "" {
-			cfg.Mode = *mode
-		}
-		if *promptName != "" {
-			cfg.Prompts.Active = *promptName
-		}
-		if err := cfg.Validate(); err != nil {
-			return err
-		}
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
-		defer stop()
 		return runOnce(ctx, cfg, *out)
 	}
-	return nil
+	err = runHotkeys(ctx, cfg)
+	if errors.Is(err, context.Canceled) {
+		return nil // Ctrl+C
+	}
+	return err
+}
+
+// build creates the pipeline and the AI provider it uses.
+func build(cfg config.Config) (pipeline.Pipeline, ai.Provider, error) {
+	capturer, err := capture.New(cfg.Capture)
+	if err != nil {
+		return pipeline.Pipeline{}, nil, err
+	}
+	provider, err := ai.New(cfg.AI)
+	if err != nil {
+		return pipeline.Pipeline{}, nil, err
+	}
+	return pipeline.Pipeline{Capturer: capturer, AI: provider, MaxImagePx: cfg.AI.MaxImagePx}, provider, nil
+}
+
+// runHotkeys keeps running and reacts to the global hotkeys.
+func runHotkeys(ctx context.Context, cfg config.Config) error {
+	p, provider, err := build(cfg)
+	if err != nil {
+		return err
+	}
+	listener, err := hotkey.Listen(cfg.Hotkeys.Bindings())
+	if err != nil {
+		return err
+	}
+	defer listener.Close()
+
+	c := app.New(cfg, app.Deps{
+		Pipeline:  p,
+		NewOCR:    func() (pipeline.Recognizer, error) { return ocr.New(cfg.OCR, provider) },
+		UI:        console.New(os.Stdout),
+		Clipboard: clipboard.WriteAll,
+	})
+
+	bindings := cfg.Hotkeys.Bindings()
+	fmt.Println("listening for hotkeys (Ctrl+C to exit):")
+	for _, action := range slices.Sorted(maps.Keys(bindings)) {
+		fmt.Printf("  %-15s %s\n", action, bindings[action])
+	}
+	return c.Run(ctx, listener.Events())
 }
 
 // runOnce analyzes the screen once and prints the answer.
 func runOnce(ctx context.Context, cfg config.Config, out string) error {
-	capturer, err := capture.New(cfg.Capture)
+	p, provider, err := build(cfg)
 	if err != nil {
 		return err
 	}
-	provider, err := ai.New(cfg.AI)
-	if err != nil {
-		return err
-	}
-	p := &pipeline.Pipeline{Capturer: capturer, AI: provider, MaxImagePx: cfg.AI.MaxImagePx}
 	// Only build OCR when used, so image mode works without tesseract.
 	if cfg.Mode == config.ModeOCR {
 		if p.OCR, err = ocr.New(cfg.OCR, provider); err != nil {

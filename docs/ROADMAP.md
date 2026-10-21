@@ -74,11 +74,13 @@ Done when: `peekai --once` prints an answer from a local Ollama.
 ## 6. Hotkeys & controller — `feat/hotkeys`
 - `feat(hotkey): parse shortcut strings like Ctrl+Shift+S`
 - `feat(hotkey): register global hotkeys from config`
-- `feat(app): add controller with actions capture, hide_all, cycle_prompt, toggle_mode, quit`
-- `feat(app): cancel in-flight run on re-trigger or hide`
-- `test(hotkey): cover shortcut parsing`
+- `feat(ui): add Presenter interface and console presenter`
+- `feat(app): add controller for all hotkey actions`
+- `feat(app): run as hotkey listener when started without -once`
+- `test: cover shortcut parsing and controller actions`
 
-Done when: hotkeys run the pipeline and log results (no UI yet).
+Done when: hotkeys run the pipeline and print results in the terminal (console presenter; real windows in 8–9).
+Esc is not a global hotkey on purpose (it would steal Esc from every app); `hide_all` cancels a running request.
 
 ## 7. UI spike — `spike/ui-on-top`
 - `feat(ui): add Presenter interface`
