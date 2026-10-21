@@ -6,12 +6,16 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"image"
 	"image/png"
 	"os"
 	"os/signal"
+	"time"
 
+	"github.com/Miwm64/peekai/internal/ai"
 	"github.com/Miwm64/peekai/internal/capture"
 	"github.com/Miwm64/peekai/internal/config"
+	"github.com/Miwm64/peekai/internal/pipeline"
 )
 
 var version = "dev"
@@ -26,8 +30,10 @@ func main() {
 func run() error {
 	configPath := flag.String("config", "", "path to config.json (default: user config dir)")
 	showVersion := flag.Bool("version", false, "print version and exit")
-	once := flag.Bool("once", false, "capture the screen once, save it and exit")
-	out := flag.String("out", "capture.png", "where -once saves the screenshot")
+	once := flag.Bool("once", false, "analyze the screen once, print the answer and exit")
+	mode := flag.String("mode", "", "override config mode for -once: image | ocr")
+	promptName := flag.String("prompt", "", "override the active prompt for -once (name from prompts.list)")
+	out := flag.String("out", "", "also save the screenshot sent by -once to this PNG file")
 	flag.Parse()
 
 	if *showVersion {
@@ -54,6 +60,15 @@ func run() error {
 		path, cfg.Mode, cfg.Output, cfg.AI.Provider, cfg.AI.Model)
 
 	if *once {
+		if *mode != "" {
+			cfg.Mode = *mode
+		}
+		if *promptName != "" {
+			cfg.Prompts.Active = *promptName
+		}
+		if err := cfg.Validate(); err != nil {
+			return err
+		}
 		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 		defer stop()
 		return runOnce(ctx, cfg, *out)
@@ -61,19 +76,35 @@ func run() error {
 	return nil
 }
 
-// runOnce captures the screen and saves it as a PNG.
+// runOnce analyzes the screen once and prints the answer.
 func runOnce(ctx context.Context, cfg config.Config, out string) error {
 	capturer, err := capture.New(cfg.Capture)
 	if err != nil {
 		return err
 	}
-	img, err := capturer.Capture(ctx)
+	provider, err := ai.New(cfg.AI)
 	if err != nil {
-		return fmt.Errorf("capture: %w", err)
+		return err
 	}
-	img = capture.Downscale(img, cfg.AI.MaxImagePx)
+	p := &pipeline.Pipeline{Capturer: capturer, AI: provider, MaxImagePx: cfg.AI.MaxImagePx}
 
-	f, err := os.Create(out)
+	fmt.Printf("asking %s (%s), prompt %q…\n", cfg.AI.Provider, cfg.AI.Model, cfg.Prompts.Active)
+	res, err := p.Run(ctx, pipeline.Options{Mode: cfg.Mode, Prompt: cfg.Prompts.List[cfg.Prompts.Active]})
+	if out != "" && res.Image != nil {
+		if err := savePNG(out, res.Image); err != nil {
+			return err
+		}
+		fmt.Println("saved screenshot:", out)
+	}
+	if err != nil {
+		return err
+	}
+	fmt.Printf("\n%s\n\n(%s)\n", res.Answer, res.Elapsed.Round(100*time.Millisecond))
+	return nil
+}
+
+func savePNG(path string, img image.Image) error {
+	f, err := os.Create(path)
 	if err != nil {
 		return err
 	}
@@ -81,10 +112,5 @@ func runOnce(ctx context.Context, cfg config.Config, out string) error {
 		f.Close()
 		return err
 	}
-	if err := f.Close(); err != nil {
-		return err
-	}
-	b := img.Bounds()
-	fmt.Printf("saved %dx%d screenshot: %s\n", b.Dx(), b.Dy(), out)
-	return nil
+	return f.Close()
 }
