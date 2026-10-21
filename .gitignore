@@ -1,0 +1,13 @@
+# build output
+/bin/
+/dist/
+*.exe
+
+# local runtime config (may point at private endpoints)
+/config.json
+
+# editor / tooling
+.idea/
+.vscode/
+.DS_Store
+.claude/settings.local.json
