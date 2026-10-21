@@ -84,7 +84,11 @@ func (p *openAI) Analyze(ctx context.Context, req Request) (string, error) {
 		return "", fmt.Errorf("%s: read response: %w", p.name, err)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("%s: %s: %s", p.name, resp.Status, apiError(data))
+		msg := apiError(data)
+		if req.Image != nil && looksLikeNoVision(msg) {
+			msg += fmt.Sprintf(" (model %q can't read images: use a vision model or -mode ocr)", p.model)
+		}
+		return "", fmt.Errorf("%s: %s: %s", p.name, resp.Status, msg)
 	}
 
 	var out chatResponse
@@ -97,8 +101,16 @@ func (p *openAI) Analyze(ctx context.Context, req Request) (string, error) {
 	return strings.TrimSpace(out.Choices[0].Message.Content), nil
 }
 
+// looksLikeNoVision reports whether an error says the model rejected an image.
+func looksLikeNoVision(msg string) bool {
+	m := strings.ToLower(msg)
+	return strings.Contains(m, "multimodal") || strings.Contains(m, "does not support image") ||
+		strings.Contains(m, "image input is not supported")
+}
+
 // apiError extracts a readable message from an error response body.
-// Servers use either {"error": {"message": "..."}} or {"error": "..."}.
+// Servers use either {"error": {"message": "..."}} or {"error": "..."};
+// Ollama may nest a whole error body as JSON inside that message.
 func apiError(body []byte) string {
 	var e struct {
 		Error json.RawMessage `json:"error"`
@@ -107,11 +119,16 @@ func apiError(body []byte) string {
 		var obj struct {
 			Message string `json:"message"`
 		}
-		if json.Unmarshal(e.Error, &obj) == nil && obj.Message != "" {
-			return obj.Message
-		}
 		var s string
-		if json.Unmarshal(e.Error, &s) == nil && s != "" {
+		if json.Unmarshal(e.Error, &obj) == nil && obj.Message != "" {
+			s = obj.Message
+		} else if json.Unmarshal(e.Error, &s) != nil {
+			s = ""
+		}
+		if strings.HasPrefix(strings.TrimSpace(s), "{") {
+			return apiError([]byte(s))
+		}
+		if s != "" {
 			return s
 		}
 	}

@@ -99,6 +99,11 @@ func TestAnalyzeErrors(t *testing.T) {
 	}{
 		{"openai style", http.StatusUnauthorized, `{"error":{"message":"bad key"}}`, "bad key"},
 		{"ollama style", http.StatusNotFound, `{"error":"model not found"}`, "model not found"},
+		{
+			"ollama nested", http.StatusBadRequest,
+			`{"error":{"message":"{\"error\":{\"code\":400,\"message\":\"inner reason\"}}","type":"invalid_request_error"}}`,
+			"400 Bad Request: inner reason",
+		},
 		{"plain text", http.StatusBadGateway, `upstream down`, "upstream down"},
 		{"no choices", http.StatusOK, `{"choices":[]}`, "empty response"},
 	}
@@ -162,5 +167,24 @@ func TestCancel(t *testing.T) {
 	cancel()
 	if _, err := p.Analyze(ctx, Request{Prompt: "x"}); err == nil {
 		t.Error("want error on cancelled context")
+	}
+}
+
+func TestNoVisionHint(t *testing.T) {
+	body := `{"error":{"message":"Multimodal data provided, but model does not support multimodal requests."}}`
+	srv, _, _ := fakeServer(t, http.StatusBadRequest, body)
+	p, err := New(cfgFor("ollama", srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	_, err = p.Analyze(context.Background(), Request{Prompt: "x", Image: image.NewRGBA(image.Rect(0, 0, 2, 2))})
+	if err == nil || !strings.Contains(err.Error(), `model "m1" can't read images`) {
+		t.Errorf("err = %v, want vision hint", err)
+	}
+
+	_, err = p.Analyze(context.Background(), Request{Prompt: "x", Text: "words"})
+	if err == nil || strings.Contains(err.Error(), "can't read images") {
+		t.Errorf("text request got vision hint: %v", err)
 	}
 }
