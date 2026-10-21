@@ -68,7 +68,10 @@ type OCR struct {
 }
 
 type AI struct {
-	Provider   string   `json:"provider"`
+	// Provider is a preset ("ollama", "routerai", "grok") or "openai_compat"
+	// for any other OpenAI-compatible server.
+	Provider string `json:"provider"`
+	// BaseURL and APIKeyEnv override the preset; empty means use its default.
 	BaseURL    string   `json:"base_url"`
 	Model      string   `json:"model"`
 	APIKeyEnv  string   `json:"api_key_env"`
@@ -120,10 +123,8 @@ func Default() Config {
 		Capture: Capture{Display: "active"},
 		OCR:     OCR{Engine: "tesseract_cli", Lang: "eng"},
 		AI: AI{
-			Provider:   "openai_compat",
-			BaseURL:    "http://localhost:11434/v1",
+			Provider:   "ollama",
 			Model:      "qwen2.5vl:7b",
-			APIKeyEnv:  "AI_API_KEY",
 			Timeout:    Duration(60 * time.Second),
 			MaxImagePx: 1600,
 		},
