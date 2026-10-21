@@ -15,6 +15,7 @@ import (
 	"github.com/Miwm64/peekai/internal/ai"
 	"github.com/Miwm64/peekai/internal/capture"
 	"github.com/Miwm64/peekai/internal/config"
+	"github.com/Miwm64/peekai/internal/ocr"
 	"github.com/Miwm64/peekai/internal/pipeline"
 )
 
@@ -87,8 +88,14 @@ func runOnce(ctx context.Context, cfg config.Config, out string) error {
 		return err
 	}
 	p := &pipeline.Pipeline{Capturer: capturer, AI: provider, MaxImagePx: cfg.AI.MaxImagePx}
+	// Only build OCR when used, so image mode works without tesseract.
+	if cfg.Mode == config.ModeOCR {
+		if p.OCR, err = ocr.New(cfg.OCR, provider); err != nil {
+			return err
+		}
+	}
 
-	fmt.Printf("asking %s (%s), prompt %q…\n", cfg.AI.Provider, cfg.AI.Model, cfg.Prompts.Active)
+	fmt.Printf("asking %s (%s), mode %s, prompt %q…\n", cfg.AI.Provider, cfg.AI.Model, cfg.Mode, cfg.Prompts.Active)
 	res, err := p.Run(ctx, pipeline.Options{Mode: cfg.Mode, Prompt: cfg.Prompts.List[cfg.Prompts.Active]})
 	if out != "" && res.Image != nil {
 		if err := savePNG(out, res.Image); err != nil {
@@ -96,11 +103,22 @@ func runOnce(ctx context.Context, cfg config.Config, out string) error {
 		}
 		fmt.Println("saved screenshot:", out)
 	}
+	if res.Text != "" {
+		fmt.Printf("ocr text (%d chars):\n%s\n", len(res.Text), preview(res.Text, 400))
+	}
 	if err != nil {
 		return err
 	}
 	fmt.Printf("\n%s\n\n(%s)\n", res.Answer, res.Elapsed.Round(100*time.Millisecond))
 	return nil
+}
+
+// preview shortens s to at most n runes.
+func preview(s string, n int) string {
+	if r := []rune(s); len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return s
 }
 
 func savePNG(path string, img image.Image) error {
