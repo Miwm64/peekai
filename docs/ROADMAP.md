@@ -37,7 +37,7 @@ Swapping a backend = add one file + one registry line + change `config.json`.
 - `feat(config): validate mode, output, provider and hotkeys`
 - `test(config): cover defaults, overrides and invalid input`
 
-Done when: `peekai` creates `config.json` in the user config dir (`os.UserConfigDir()/peekai`) and errors clearly on bad values.
+Done when: `peekai` creates `config.json` next to its executable (current dir under `go run`) and errors clearly on bad values.
 
 ## 2. Screen capture — `feat/capture`
 - `feat(capture): add Capturer interface`

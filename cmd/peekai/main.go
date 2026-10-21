@@ -28,7 +28,7 @@ func main() {
 }
 
 func run() error {
-	configPath := flag.String("config", "", "path to config.json (default: user config dir)")
+	configPath := flag.String("config", "", "path to config.json (default: next to the peekai executable)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	once := flag.Bool("once", false, "analyze the screen once, print the answer and exit")
 	mode := flag.String("mode", "", "override config mode for -once: image | ocr")
