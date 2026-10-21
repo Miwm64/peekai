@@ -8,15 +8,35 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
-// DefaultPath returns <user config dir>/peekai/config.json.
+// FileName is the config file kept next to the peekai executable.
+const FileName = "config.json"
+
+// DefaultPath returns config.json next to the peekai executable, so the app
+// is portable. Under `go run` the binary lives in a temporary build dir, so
+// the current directory is used instead.
 func DefaultPath() (string, error) {
-	dir, err := os.UserConfigDir()
+	exe, err := os.Executable()
 	if err != nil {
 		return "", err
 	}
-	return filepath.Join(dir, "peekai", "config.json"), nil
+	if resolved, err := filepath.EvalSymlinks(exe); err == nil {
+		exe = resolved
+	}
+	return pathFor(exe, os.Getwd)
+}
+
+func pathFor(exe string, getwd func() (string, error)) (string, error) {
+	if strings.Contains(filepath.ToSlash(exe), "/go-build") {
+		dir, err := getwd()
+		if err != nil {
+			return "", err
+		}
+		return filepath.Join(dir, FileName), nil
+	}
+	return filepath.Join(filepath.Dir(exe), FileName), nil
 }
 
 // Load reads the config at path. If the file does not exist, the default

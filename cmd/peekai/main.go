@@ -24,7 +24,7 @@ func main() {
 }
 
 func run() error {
-	configPath := flag.String("config", "", "path to config.json (default: user config dir)")
+	configPath := flag.String("config", "", "path to config.json (default: next to the peekai executable)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	once := flag.Bool("once", false, "capture the screen once, save it and exit")
 	out := flag.String("out", "capture.png", "where -once saves the screenshot")
