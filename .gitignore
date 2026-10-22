@@ -11,3 +11,6 @@
 .vscode/
 .DS_Store
 .claude/settings.local.json
+
+# go mod vendor (only used locally to read dependency sources)
+/vendor/

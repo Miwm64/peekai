@@ -112,6 +112,8 @@ func (o *Overlay) Run(work func() error) {
 		}
 		os.Exit(code)
 	}()
+	// Without this the overlay windows flash up empty at startup.
+	ontop.SuppressAutoShow()
 	backend.RunApp(o.app, o.popup, o.ticker, o.status)
 }
 

@@ -34,6 +34,11 @@ func Hide(title string) bool { return setVisible(title, false) }
 // Debug describes the window's overlay state for troubleshooting.
 func Debug(title string) string { return debug(title) }
 
+// SuppressAutoShow keeps overlay windows (titles starting with "peekai-")
+// from being shown by the toolkit itself: at creation and when the app
+// becomes active. Call it before the UI starts.
+func SuppressAutoShow() { suppressAutoShow() }
+
 // Background makes the app an overlay: no Dock/taskbar entry and showing a
 // window doesn't take focus from the app you're using. UI thread only.
 func Background() { background() }

@@ -122,6 +122,10 @@ func setVisible(title string, visible bool) bool {
 // background: tool windows (set in place) already stay off the taskbar.
 func background() {}
 
+// suppressAutoShow: not needed on Windows so far; overlays are hidden on
+// their first frame.
+func suppressAutoShow() {}
+
 const excludesFromCapture = true
 
 // screen returns the work area (without taskbar) of the monitor under the

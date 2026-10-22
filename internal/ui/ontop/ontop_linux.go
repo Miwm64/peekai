@@ -136,6 +136,10 @@ func setVisible(title string, visible bool) bool {
 // background: skip-taskbar/pager (set in place) keep windows out of panels.
 func background() {}
 
+// suppressAutoShow: not needed on X11 so far; overlays are hidden on
+// their first frame.
+func suppressAutoShow() {}
+
 // X11 has no way to keep a window out of screenshots; callers hide the
 // overlay while capturing instead.
 const excludesFromCapture = false

@@ -4,6 +4,33 @@ package ontop
 #cgo CFLAGS: -x objective-c -fobjc-arc
 #cgo LDFLAGS: -framework Cocoa
 #import <Cocoa/Cocoa.h>
+#import <objc/runtime.h>
+
+// go-gui shows every window when it creates it (makeKeyAndOrderFront:),
+// and again whenever the app becomes active. For our overlay windows
+// (titles starting with "peekai-") that is a flash of empty black windows
+// at startup and a focus grab later, so those calls are skipped: overlays
+// appear only through peekaiSetVisible.
+static IMP peekaiOrigMakeKey;
+
+static void peekaiMakeKey(id self, SEL cmd, id sender) {
+	if ([[(NSWindow *)self title] hasPrefix:@"peekai-"]) return;
+	((void (*)(id, SEL, id))peekaiOrigMakeKey)(self, cmd, sender);
+}
+
+static void peekaiSuppressAutoShow(void) {
+	Class gw = NSClassFromString(@"GUIWindow");
+	if (gw == nil || peekaiOrigMakeKey != NULL) return;
+	SEL sel = @selector(makeKeyAndOrderFront:);
+	Method base = class_getInstanceMethod([NSWindow class], sel);
+	peekaiOrigMakeKey = method_getImplementation(base);
+	// Only go-gui's window class gets the override; other windows keep
+	// the normal behaviour.
+	if (!class_addMethod(gw, sel, (IMP)peekaiMakeKey, method_getTypeEncoding(base))) {
+		Method own = class_getInstanceMethod(gw, sel);
+		peekaiOrigMakeKey = method_setImplementation(own, (IMP)peekaiMakeKey);
+	}
+}
 
 static int peekaiPlace(const char *title, double x, double y, double w, double h, int clickThrough) {
 	NSString *t = [NSString stringWithUTF8String:title];
@@ -95,6 +122,8 @@ func place(title string, r Rect, opts Options) bool {
 }
 
 func background() { C.peekaiAccessory() }
+
+func suppressAutoShow() { C.peekaiSuppressAutoShow() }
 
 const excludesFromCapture = true
 
