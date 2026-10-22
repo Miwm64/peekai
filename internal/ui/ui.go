@@ -30,13 +30,17 @@ const (
 )
 
 // Content is what the windows display. Text is the answer (Ready) or the
-// error message (Failed).
+// error message (Failed). Prompt, Mode, Provider and Model are the current
+// settings; Stale marks an answer made with different ones.
 type Content struct {
-	State  State
-	Text   string
-	Prompt string
-	Mode   string
-	At     time.Time // when the answer arrived
+	State    State
+	Text     string
+	Stale    bool
+	Prompt   string
+	Mode     string
+	Provider string
+	Model    string
+	At       time.Time // when the answer arrived
 }
 
 // Presenter shows results. Windows open and close only through Show and
@@ -51,30 +55,33 @@ type Presenter interface {
 	Notify(msg string)
 }
 
-// Header is a one-line summary, e.g. "● thinking… · explain · image".
+// Header is the window's title line, e.g.
+// "✓ answer · explain · image · ollama/qwen2.5vl:7b · 14:02".
 func (c Content) Header() string {
-	meta := c.Prompt + " · " + c.Mode
-	switch c.State {
-	case Thinking:
+	meta := c.Prompt + " · " + c.Mode + " · " + c.Provider + "/" + c.Model
+	switch {
+	case c.State == Thinking:
 		return "● thinking… · " + meta
-	case Ready:
+	case c.Stale:
+		return "previous answer · " + meta
+	case c.State == Ready:
 		return "✓ answer · " + meta + " · " + c.At.Format("15:04")
-	case Failed:
+	case c.State == Failed:
 		return "✕ failed · " + meta
 	}
 	return "no result yet · " + meta
 }
 
-// Body is the main text to display.
+// Body is the main text to display. While thinking, or after the settings
+// changed, the last answer stays visible marked as previous.
 func (c Content) Body() string {
-	switch c.State {
-	case Thinking:
-		if c.Text != "" {
-			return "(previous answer)\n" + c.Text
-		}
-		return "Working on it…"
-	case Idle:
+	switch {
+	case c.State == Idle:
 		return "Press the capture shortcut to analyze the screen."
+	case c.State == Thinking && c.Text == "":
+		return "Working on it…"
+	case c.State == Thinking, c.Stale:
+		return "(previous answer)\n" + c.Text
 	}
 	return c.Text
 }
