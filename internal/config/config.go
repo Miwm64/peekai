@@ -160,26 +160,53 @@ type UI struct {
 }
 
 // BuiltinThemes are the themes that need no definition in ui.themes.
-var BuiltinThemes = []string{"dark"}
+// "system" is light or dark following the OS appearance; "stealth" is
+// tiny, dim text on an almost transparent background that bystanders
+// hardly notice.
+var BuiltinThemes = []string{"system", "light", "dark", "glass", "high-contrast", "terminal", "stealth"}
 
-// CustomTheme is a user-defined look based on another theme. Colors,
-// fonts and per-window overrides come with the theme step.
+// CustomTheme is a user-defined look: Base supplies everything left empty.
+// Colors are "#RRGGBB" or "#RRGGBBAA".
 type CustomTheme struct {
-	Name string `json:"name"`
-	Base string `json:"base"`
+	Name       string `json:"name"`
+	Base       string `json:"base"`
+	Background string `json:"background,omitempty"`
+	Text       string `json:"text,omitempty"`
+	Dim        string `json:"dim,omitempty"` // title line and secondary text
+	Accent     string `json:"accent,omitempty"`
+	Thinking   string `json:"thinking,omitempty"` // state colors in the title line
+	Answer     string `json:"answer,omitempty"`
+	Failed     string `json:"failed,omitempty"`
+	// FontSize of the answer text; 0 keeps the base theme's.
+	FontSize float64 `json:"font_size,omitempty"`
+	// Opacity of the window backgrounds, (0, 1]; 0 keeps the base's.
+	Opacity float64 `json:"opacity,omitempty"`
+	// Radius of the popup corners in px; 0 keeps the base's.
+	Radius float64 `json:"radius,omitempty"`
+	Mono   bool    `json:"mono,omitempty"` // monospace font
+}
+
+// Colors returns the theme's color fields by config key, for validation.
+func (t CustomTheme) Colors() map[string]string {
+	return map[string]string{
+		"background": t.Background, "text": t.Text, "dim": t.Dim, "accent": t.Accent,
+		"thinking": t.Thinking, "answer": t.Answer, "failed": t.Failed,
+	}
 }
 
 type Popup struct {
-	Width     int      `json:"width"`
-	MaxHeight int      `json:"max_height"`
-	Opacity   float64  `json:"opacity"`
-	AutoHide  Duration `json:"autohide"` // 0 = never
+	Width     int `json:"width"`
+	MaxHeight int `json:"max_height"`
+	// Opacity overrides the theme's for this window; 0 = theme.
+	Opacity  float64  `json:"opacity,omitempty"`
+	AutoHide Duration `json:"autohide"` // 0 = never
 }
 
 type Ticker struct {
-	Speed    int     `json:"speed"` // pixels per second
-	Height   int     `json:"height"`
-	Opacity  float64 `json:"opacity"`
+	Speed  int `json:"speed"` // pixels per second
+	Height int `json:"height"`
+	// Opacity overrides the theme's for this window; 0 = theme.
+	Opacity  float64 `json:"opacity,omitempty"`
 	Position string  `json:"position"` // "bottom" | "top"
 	// Start is where the text begins: "right" enters at the right edge,
 	// "left" starts already visible at the left. It then moves left.
@@ -198,28 +225,12 @@ func Default() Config {
 		Version: Version,
 		Capture: Capture{Mode: ModeImage, Display: "mouse", MaxImagePx: 1600},
 		OCR:     OCR{Engine: "tesseract_cli", Lang: "eng+rus"},
+		// No providers or models: they're added in the settings window,
+		// which suggests common providers (see ProviderSuggestions).
 		AI: AI{
-			DefaultModel: "qwen-local",
-			Timeout:      Duration(2 * time.Minute), // local models can take >60s on first load
-			Providers: []Provider{
-				{Name: "ollama", URL: "http://localhost:11434/v1"},
-				{Name: "grok", URL: "https://api.x.ai/v1", KeyEnv: "XAI_API_KEY"},
-				{Name: "routerai", URL: "https://routerai.ru/api/v1", KeyEnv: "ROUTERAI_API_KEY"},
-			},
-			Models: []Model{
-				{
-					Name: "qwen-local", Provider: "ollama", Model: "qwen2.5vl:7b",
-					Vision: true, Free: true, Description: "local, private, slower",
-				},
-				{
-					Name: "grok", Provider: "grok", Model: "grok-4.7",
-					Vision: true, Description: "xAI, prepaid credits",
-				},
-				{
-					Name: "deepseek-flash", Provider: "routerai", Model: "deepseek/deepseek-v4.1-flash",
-					Vision: true, Description: "cheap, via RouterAI",
-				},
-			},
+			Timeout:   Duration(2 * time.Minute), // local models can take >60s on first load
+			Providers: []Provider{},
+			Models:    []Model{},
 		},
 		Prompts: Prompts{
 			Default: "explain",
@@ -243,10 +254,10 @@ func Default() Config {
 			Quit:         "Ctrl+Shift+Q",
 		},
 		UI: UI{
-			Theme:  "dark",
+			Theme:  "system",
 			Themes: []CustomTheme{},
-			Popup:  Popup{Width: 520, MaxHeight: 600, Opacity: 0.95},
-			Ticker: Ticker{Speed: 120, Height: 44, Opacity: 0.85, Position: "bottom", Start: "right"},
+			Popup:  Popup{Width: 520, MaxHeight: 600},
+			Ticker: Ticker{Speed: 120, Height: 44, Position: "bottom", Start: "right"},
 		},
 	}
 }
@@ -269,4 +280,58 @@ func (d *Duration) UnmarshalJSON(b []byte) error {
 	}
 	*d = Duration(v)
 	return nil
+}
+
+// ProviderSuggestion is a ready-made provider the settings window offers,
+// with a model to start from.
+type ProviderSuggestion struct {
+	Provider Provider
+	Model    Model
+	Note     string // shown next to the suggestion
+}
+
+// ProviderSuggestions are the providers offered under "Add provider".
+var ProviderSuggestions = []ProviderSuggestion{
+	{
+		Provider: Provider{Name: "ollama", URL: "http://localhost:11434/v1"},
+		Model:    Model{Name: "qwen-local", Provider: "ollama", Model: "qwen2.5vl:7b", Vision: true, Free: true, Description: "local, private"},
+		Note:     "free, runs on this computer (ollama.com)",
+	},
+	{
+		Provider: Provider{Name: "gemini", URL: "https://generativelanguage.googleapis.com/v1beta/openai", KeyEnv: "GEMINI_API_KEY"},
+		Model: Model{
+			Name: "gemini-flash", Provider: "gemini", Model: "gemini-3.8-flash", Vision: true, Free: true,
+			Description: "free tier, daily limits", ReasoningEffort: "none",
+		},
+		Note: "free tier, key from aistudio.google.com",
+	},
+	{
+		Provider: Provider{Name: "openrouter", URL: "https://openrouter.ai/api/v1", KeyEnv: "OPENROUTER_API_KEY"},
+		Model:    Model{Name: "or-free", Provider: "openrouter", Model: "openrouter/free", Vision: true, Free: true, Description: "rotating free models"},
+		Note:     "free models and many paid ones",
+	},
+	{
+		Provider: Provider{Name: "routerai", URL: "https://routerai.ru/api/v1", KeyEnv: "ROUTERAI_API_KEY"},
+		Model:    Model{Name: "deepseek-routerai", Provider: "routerai", Model: "deepseek/deepseek-v4.1-flash", Vision: true, Description: "cheap"},
+		Note:     "paid, many models",
+	},
+	{
+		Provider: Provider{Name: "requesty", URL: "https://router.requesty.ai/v1", KeyEnv: "REQUESTY_API_KEY"},
+		Model:    Model{Name: "deepseek-requesty", Provider: "requesty", Model: "deepseek/deepseek-v4.1-flash", Vision: true, Description: "cheap"},
+		Note:     "paid, many models",
+	},
+	{
+		Provider: Provider{Name: "grok", URL: "https://api.x.ai/v1", KeyEnv: "XAI_API_KEY"},
+		Model:    Model{Name: "grok", Provider: "grok", Model: "grok-4.7", Vision: true, Description: "xAI"},
+		Note:     "paid, prepaid credits",
+	},
+	{
+		Provider: Provider{Name: "lmstudio", URL: "http://localhost:1234/v1"},
+		Note:     "free, local (lmstudio.ai)",
+	},
+	{
+		Provider: Provider{Name: "openai", URL: "https://api.openai.com/v1", KeyEnv: "OPENAI_API_KEY"},
+		Model:    Model{Name: "gpt", Provider: "openai", Model: "gpt-5-mini", Vision: true, Description: "OpenAI"},
+		Note:     "paid",
+	},
 }

@@ -83,8 +83,38 @@ func TestParseListsReplaceDefaults(t *testing.T) {
 	}
 }
 
+// withSuggestions is the default config plus every suggested provider and
+// its model, like after adding them all in the settings window.
+func withSuggestions() Config {
+	cfg := Default()
+	for _, s := range ProviderSuggestions {
+		cfg.AI.Providers = append(cfg.AI.Providers, s.Provider)
+		if s.Model.Name != "" {
+			cfg.AI.Models = append(cfg.AI.Models, s.Model)
+		}
+	}
+	cfg.AI.DefaultModel = cfg.AI.Models[0].Name
+	return cfg
+}
+
+func TestEmptyDefaultsAndSuggestionsAreValid(t *testing.T) {
+	cfg := Default()
+	if len(cfg.AI.Providers) != 0 || len(cfg.AI.Models) != 0 || cfg.AI.DefaultModel != "" {
+		t.Errorf("default ai = %+v, want empty", cfg.AI)
+	}
+	if err := withSuggestions().Validate(); err != nil {
+		t.Errorf("suggestions invalid: %v", err)
+	}
+}
+
 func TestResolvedModelsKeepOrderAndJoinProviders(t *testing.T) {
 	cfg := Default()
+	cfg.AI.Providers = []Provider{{Name: "ollama", URL: "http://localhost:11434/v1"}, {Name: "grok", URL: "https://api.x.ai/v1", KeyEnv: "XAI_API_KEY"}}
+	cfg.AI.Models = []Model{
+		{Name: "qwen-local", Provider: "ollama", Model: "q"},
+		{Name: "grok", Provider: "grok", Model: "g"},
+		{Name: "deepseek-flash", Provider: "ollama", Model: "d"},
+	}
 	got := cfg.ResolvedModels()
 	var names []string
 	for _, m := range got {
@@ -128,19 +158,21 @@ func TestParseErrors(t *testing.T) {
 		{"bad display", `, "capture": {"display": "left"}`, "capture.display"},
 		{"old display name", `, "capture": {"display": "active"}`, "capture.display"},
 		{"bad duration", `, "ai": {"timeout": "soon"}`, "invalid duration"},
-		{"unknown default model", `, "ai": {"default_model": "nope"}`, "ai.default_model"},
+		{"unknown default model", `, "ai": {"providers": [{"name": "ollama", "url": "http://a"}], "models": [{"name": "x", "provider": "ollama", "model": "m"}], "default_model": "nope"}`, "ai.default_model"},
 		{"model with unknown provider", `, "ai": {"models": [{"name": "x", "provider": "nope", "model": "m"}], "default_model": "x"}`, `provider "nope" is not in ai.providers`},
-		{"model without id", `, "ai": {"models": [{"name": "x", "provider": "ollama"}], "default_model": "x"}`, "model is required"},
-		{"duplicate model", `, "ai": {"models": [{"name": "x", "provider": "ollama", "model": "a"}, {"name": "x", "provider": "ollama", "model": "b"}], "default_model": "x"}`, `name "x" is used twice`},
+		{"model without id", `, "ai": {"providers": [{"name": "ollama", "url": "http://a"}], "models": [{"name": "x", "provider": "ollama"}], "default_model": "x"}`, "model is required"},
+		{"duplicate model", `, "ai": {"providers": [{"name": "ollama", "url": "http://a"}], "models": [{"name": "x", "provider": "ollama", "model": "a"}, {"name": "x", "provider": "ollama", "model": "b"}], "default_model": "x"}`, `name "x" is used twice`},
 		{"duplicate provider", `, "ai": {"providers": [{"name": "p", "url": "http://a"}, {"name": "p", "url": "http://b"}], "models": [{"name": "x", "provider": "p", "model": "m"}], "default_model": "x"}`, `name "p" is used twice`},
 		{"bad url", `, "ai": {"providers": [{"name": "p", "url": "localhost:1"}], "models": [{"name": "x", "provider": "p", "model": "m"}], "default_model": "x"}`, "url must be like"},
-		{"bad reasoning", `, "ai": {"models": [{"name": "x", "provider": "ollama", "model": "m", "reasoning_effort": "max"}], "default_model": "x"}`, "reasoning_effort"},
+		{"bad reasoning", `, "ai": {"providers": [{"name": "ollama", "url": "http://a"}], "models": [{"name": "x", "provider": "ollama", "model": "m", "reasoning_effort": "max"}], "default_model": "x"}`, "reasoning_effort"},
 		{"duplicate hotkey", `, "hotkeys": {"quit": "ctrl+shift+s"}`, "already used"},
 		{"empty hotkey", `, "hotkeys": {"quit": ""}`, "hotkeys.quit: must not be empty"},
 		{"missing default prompt", `, "prompts": {"default": "nope"}`, "prompts.default"},
 		{"unknown theme", `, "ui": {"theme": "pink"}`, "ui.theme"},
 		{"theme loop", `, "ui": {"themes": [{"name": "a", "base": "b"}, {"name": "b", "base": "a"}]}`, "loops back"},
 		{"theme bad base", `, "ui": {"themes": [{"name": "a", "base": "nope"}]}`, "not another theme"},
+		{"theme bad color", `, "ui": {"themes": [{"name": "a", "base": "dark", "text": "red"}]}`, "a).text: want a color"},
+		{"theme bad opacity", `, "ui": {"themes": [{"name": "a", "base": "dark", "opacity": 2}]}`, "a).opacity"},
 		{"bad opacity", `, "ui": {"popup": {"opacity": 1.5}}`, "ui.popup.opacity"},
 		{"bad start", `, "ui": {"ticker": {"start": "middle"}}`, "ui.ticker.start"},
 	}
@@ -155,8 +187,27 @@ func TestParseErrors(t *testing.T) {
 }
 
 func TestCustomThemeIsAccepted(t *testing.T) {
-	if _, err := Parse(v2(`, "ui": {"theme": "mine", "themes": [{"name": "mine", "base": "dark"}]}`)); err != nil {
+	cfg, err := Parse(v2(`, "ui": {"theme": "mine", "themes": [{"name": "mine", "base": "stealth", "text": "#CDD6F4", "background": "#1E1E2EF0", "font_size": 17}]}`))
+	if err != nil {
 		t.Fatal(err)
+	}
+	if cfg.UI.Themes[0].FontSize != 17 {
+		t.Errorf("themes = %+v", cfg.UI.Themes)
+	}
+}
+
+func TestParseColor(t *testing.T) {
+	c, err := ParseColor("#1E1E2E")
+	if err != nil || c.R != 0x1E || c.B != 0x2E || c.A != 0xFF {
+		t.Errorf("#1E1E2E = %v, %v", c, err)
+	}
+	if c, err := ParseColor("#11223344"); err != nil || c.A != 0x44 {
+		t.Errorf("#11223344 = %v, %v", c, err)
+	}
+	for _, bad := range []string{"", "red", "#123", "#GGGGGG", "112233"} {
+		if _, err := ParseColor(bad); err == nil {
+			t.Errorf("ParseColor(%q) accepted", bad)
+		}
 	}
 }
 

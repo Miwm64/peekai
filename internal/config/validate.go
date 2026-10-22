@@ -74,10 +74,9 @@ func (c Config) Validate() error {
 				where, m.Name, strings.Join(reasoningEfforts, ", "), m.ReasoningEffort)
 		}
 	}
-	switch {
-	case len(c.AI.Models) == 0:
-		add("ai.models: needs at least one model")
-	case !models[c.AI.DefaultModel]:
+	// No models is fine (added later in Settings); otherwise the default
+	// must be one of them.
+	if len(c.AI.Models) > 0 && !models[c.AI.DefaultModel] {
 		add("ai.default_model: %q is not in ai.models", c.AI.DefaultModel)
 	}
 	if c.AI.Timeout <= 0 {
@@ -113,6 +112,19 @@ func (c Config) Validate() error {
 			continue
 		}
 		themes = append(themes, t.Name)
+	}
+	for i, t := range c.UI.Themes {
+		for key, v := range t.Colors() {
+			if _, err := ParseColor(v); v != "" && err != nil {
+				add("ui.themes[%d] (%s).%s: %v", i, t.Name, key, err)
+			}
+		}
+		if t.Opacity < 0 || t.Opacity > 1 {
+			add("ui.themes[%d] (%s).opacity: must be in (0, 1], got %v", i, t.Name, t.Opacity)
+		}
+		if t.FontSize < 0 || t.Radius < 0 {
+			add("ui.themes[%d] (%s): font_size and radius must be >= 0", i, t.Name)
+		}
 	}
 	bases := map[string]string{}
 	for i, t := range c.UI.Themes {
@@ -154,8 +166,8 @@ func (c Config) Validate() error {
 		add("ui.popup.autohide: must be >= 0")
 	}
 	for name, o := range map[string]float64{"ui.ticker.opacity": t.Opacity, "ui.popup.opacity": p.Opacity} {
-		if o <= 0 || o > 1 {
-			add("%s: must be in (0, 1], got %v", name, o)
+		if o < 0 || o > 1 {
+			add("%s: must be in (0, 1] (or 0 for the theme's), got %v", name, o)
 		}
 	}
 
