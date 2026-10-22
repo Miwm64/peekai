@@ -139,7 +139,7 @@ func Default() Config {
 			},
 		},
 		UI: UI{
-			Ticker: Ticker{Speed: 120, Height: 36, Opacity: 0.85, Position: "bottom"},
+			Ticker: Ticker{Speed: 120, Height: 44, Opacity: 0.85, Position: "bottom"},
 			Popup:  Popup{Width: 520, MaxHeight: 600, Opacity: 0.95},
 		},
 	}
