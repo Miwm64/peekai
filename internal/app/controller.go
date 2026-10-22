@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/Miwm64/peekai/internal/ai"
@@ -24,12 +25,14 @@ const (
 	ActToggleTicker = "toggle_ticker"
 	ActHideAll      = "hide_all"
 	ActCyclePrompt  = "cycle_prompt"
-	ActCycleProv    = "cycle_provider"
-	ActToggleMode   = "toggle_mode"
-	ActCopyResult   = "copy_result"
-	ActClear        = "clear"
-	ActReload       = "reload_config"
-	ActQuit         = "quit"
+	ActCycleModel   = "cycle_model"
+	// ActSelectModel + a model name switches to that model (tray menu).
+	ActSelectModel = "model:"
+	ActToggleMode  = "toggle_mode"
+	ActCopyResult  = "copy_result"
+	ActClear       = "clear"
+	ActReload      = "reload_config"
+	ActQuit        = "quit"
 )
 
 // ErrReload is returned by Run when the user asked to reload the config.
@@ -39,10 +42,10 @@ var ErrReload = errors.New("reload config")
 
 // Deps are the controller's collaborators.
 type Deps struct {
-	// Pipeline.AI is the provider used at start (AI[0]).
+	// Pipeline.AI is the client for the config's default model.
 	Pipeline pipeline.Pipeline
-	// AI lists the providers cycle_provider switches between. Empty means
-	// only Pipeline.AI, described by the config's ai section.
+	// AI lists the models cycle_model switches between, in config order.
+	// Empty means the config's models, all served by Pipeline.AI (tests).
 	AI []AIOption
 	// NewOCR builds the OCR engine on first use of ocr mode, and again
 	// after a provider switch (the llm engine reads with the provider).
@@ -95,21 +98,38 @@ func (c *Controller) restore(s Snapshot) {
 	if _, ok := c.prompts[s.current.prompt]; ok {
 		c.active = s.current.prompt
 	}
-	for i, o := range c.aiOpts {
-		if o.Provider == s.current.provider && o.Model == s.current.model {
-			if p, err := o.New(); err == nil {
-				c.aiIdx, c.aiBuilt[i] = i, p
-				c.deps.Pipeline.AI = p
-			}
-			break
+	if i := c.modelIndex(s.current.model); i >= 0 && i != c.aiIdx {
+		if p, err := c.client(i); err == nil {
+			c.aiIdx = i
+			c.deps.Pipeline.AI = p
 		}
 	}
 }
 
-// AIOption is one provider/model to switch to; New is called on first use.
+// AIOption is one configured model to switch to; New is called on first
+// use.
 type AIOption struct {
-	Provider, Model string
-	New             func() (ai.Provider, error)
+	Name        string // the model's name in the config
+	Provider    string
+	Model       string // the provider's model ID
+	Vision      bool
+	Free        bool
+	Description string
+	New         func() (ai.Provider, error)
+}
+
+// OptionsFrom describes the config's models; newClient builds the client
+// for one of them.
+func OptionsFrom(cfg config.Config, newClient func(config.ResolvedModel) (ai.Provider, error)) []AIOption {
+	var opts []AIOption
+	for _, m := range cfg.ResolvedModels() {
+		opts = append(opts, AIOption{
+			Name: m.Name, Provider: m.Provider.Name, Model: m.Model.Model,
+			Vision: m.Vision, Free: m.Free, Description: m.Description,
+			New: func() (ai.Provider, error) { return newClient(m) },
+		})
+	}
+	return opts
 }
 
 // Controller runs analyses on the capture shortcut and opens or closes
@@ -141,7 +161,7 @@ type Controller struct {
 }
 
 // settings are the choices an answer depends on.
-type settings struct{ prompt, mode, provider, model string }
+type settings struct{ prompt, mode, model string }
 
 type result struct {
 	id  int
@@ -154,20 +174,23 @@ func New(cfg config.Config, deps Deps) *Controller {
 	opts := deps.AI
 	if len(opts) == 0 {
 		p := deps.Pipeline.AI
-		opts = []AIOption{{Provider: cfg.AI.Provider, Model: cfg.AI.Model, New: func() (ai.Provider, error) { return p, nil }}}
+		opts = OptionsFrom(cfg, func(config.ResolvedModel) (ai.Provider, error) { return p, nil })
 	}
-	return &Controller{
+	c := &Controller{
 		deps:      deps,
 		aiOpts:    opts,
-		aiBuilt:   map[int]ai.Provider{0: deps.Pipeline.AI},
-		autoClear: cfg.AutoClear,
-		mode:      cfg.Mode,
+		aiBuilt:   map[int]ai.Provider{},
+		autoClear: cfg.AI.AutoClear,
+		mode:      cfg.Capture.Mode,
 		prompts:   cfg.Prompts.List,
 		names:     slices.Sorted(maps.Keys(cfg.Prompts.List)),
-		active:    cfg.Prompts.Active,
+		active:    cfg.Prompts.Default,
 		visible:   map[ui.View]bool{},
 		results:   make(chan result),
 	}
+	c.aiIdx = max(0, c.modelIndex(cfg.AI.DefaultModel))
+	c.aiBuilt[c.aiIdx] = deps.Pipeline.AI
+	return c
 }
 
 // Run handles actions until quit, ctx is done or actions is closed.
@@ -218,8 +241,8 @@ func (c *Controller) handle(ctx context.Context, action string) {
 		c.active = c.names[(i+1)%len(c.names)]
 		c.deps.UI.Notify("prompt: " + c.active)
 		c.publish()
-	case ActCycleProv:
-		c.cycleProvider()
+	case ActCycleModel:
+		c.cycleModel()
 	case ActToggleMode:
 		if c.mode == config.ModeOCR {
 			c.mode = config.ModeImage
@@ -239,6 +262,10 @@ func (c *Controller) handle(ctx context.Context, action string) {
 		c.publish()
 		c.deps.UI.Notify("cleared")
 	default:
+		if name, ok := strings.CutPrefix(action, ActSelectModel); ok {
+			c.selectModel(name)
+			return
+		}
 		c.deps.UI.Notify("unknown action: " + action)
 	}
 }
@@ -247,6 +274,16 @@ func (c *Controller) handle(ctx context.Context, action string) {
 // windows' content to "thinking" but never opens a window.
 func (c *Controller) start(ctx context.Context) {
 	c.stop()
+	// Refuse before sending anything: an image to a model that can't read
+	// it only wastes a request.
+	if o := c.aiOpts[c.aiIdx]; c.mode == config.ModeImage && !o.Vision {
+		msg := fmt.Sprintf("model %q can't read images: switch to OCR mode or pick a vision model", o.Name)
+		c.content = ui.Content{State: ui.Failed, Text: msg}
+		c.answer = c.current()
+		c.deps.UI.Notify(msg)
+		c.publish()
+		return
+	}
 	if c.mode == config.ModeOCR && c.deps.Pipeline.OCR == nil {
 		engine, err := c.deps.NewOCR(c.deps.Pipeline.AI)
 		if err != nil {
@@ -304,8 +341,9 @@ func (c *Controller) finish(r result) {
 // answer stale when it was made with other ones.
 func (c *Controller) publish() {
 	cur := c.current()
-	c.content.Prompt, c.content.Mode = cur.prompt, cur.mode
-	c.content.Provider, c.content.Model = cur.provider, cur.model
+	c.content.Prompt, c.content.Mode, c.content.Model = cur.prompt, cur.mode, cur.model
+	c.content.Free = c.aiOpts[c.aiIdx].Free
+	c.content.Models = c.models()
 	done := c.content.State == ui.Ready || c.content.State == ui.Failed
 	c.content.Stale = done && c.answer != cur
 	c.content.Context = len(c.history)
@@ -316,38 +354,78 @@ func (c *Controller) publish() {
 }
 
 func (c *Controller) current() settings {
-	o := c.aiOpts[c.aiIdx]
-	return settings{prompt: c.active, mode: c.mode, provider: o.Provider, model: o.Model}
+	return settings{prompt: c.active, mode: c.mode, model: c.aiOpts[c.aiIdx].Name}
 }
 
-// cycleProvider switches to the next AI option that starts, skipping (and
-// reporting) ones that fail, e.g. for a missing API key. A running analysis
-// keeps its provider; the next capture uses the new one.
-func (c *Controller) cycleProvider() {
+// models describes the configured models for the windows and tray.
+func (c *Controller) models() []ui.ModelInfo {
+	out := make([]ui.ModelInfo, len(c.aiOpts))
+	for i, o := range c.aiOpts {
+		out[i] = ui.ModelInfo{Name: o.Name, Description: o.Description, Free: o.Free, Vision: o.Vision}
+	}
+	return out
+}
+
+func (c *Controller) modelIndex(name string) int {
+	return slices.IndexFunc(c.aiOpts, func(o AIOption) bool { return o.Name == name })
+}
+
+// client returns the AI client for model i, building it on first use.
+func (c *Controller) client(i int) (ai.Provider, error) {
+	if p, ok := c.aiBuilt[i]; ok {
+		return p, nil
+	}
+	p, err := c.aiOpts[i].New()
+	if err != nil {
+		return nil, err
+	}
+	c.aiBuilt[i] = p
+	return p, nil
+}
+
+// use switches to model i. A running analysis keeps its model; the next
+// capture uses the new one.
+func (c *Controller) use(i int, p ai.Provider) {
+	c.aiIdx = i
+	c.deps.Pipeline.AI = p
+	c.deps.Pipeline.OCR = nil // the llm engine reads with the model; rebuilt on next use
+	c.deps.UI.Notify("model: " + c.aiOpts[i].Name)
+	c.publish()
+}
+
+// selectModel switches to the model with this name (tray menu).
+func (c *Controller) selectModel(name string) {
+	i := c.modelIndex(name)
+	if i < 0 {
+		c.deps.UI.Notify("no model named " + name)
+		return
+	}
+	p, err := c.client(i)
+	if err != nil {
+		c.deps.UI.Notify(fmt.Sprintf("can't use %s: %v", name, err))
+		return
+	}
+	c.use(i, p)
+}
+
+// cycleModel switches to the next model whose client starts, skipping
+// (and reporting) ones that fail, e.g. for a missing API key.
+func (c *Controller) cycleModel() {
 	if len(c.aiOpts) < 2 {
-		c.deps.UI.Notify("only one provider configured (add ai.alternatives)")
+		c.deps.UI.Notify("only one model configured (add more to ai.models)")
 		return
 	}
 	for step := 1; step < len(c.aiOpts); step++ {
 		next := (c.aiIdx + step) % len(c.aiOpts)
-		o := c.aiOpts[next]
-		p, ok := c.aiBuilt[next]
-		if !ok {
-			var err error
-			if p, err = o.New(); err != nil {
-				c.deps.UI.Notify(fmt.Sprintf("skipping %s/%s: %v", o.Provider, o.Model, err))
-				continue
-			}
-			c.aiBuilt[next] = p
+		p, err := c.client(next)
+		if err != nil {
+			c.deps.UI.Notify(fmt.Sprintf("skipping %s: %v", c.aiOpts[next].Name, err))
+			continue
 		}
-		c.aiIdx = next
-		c.deps.Pipeline.AI = p
-		c.deps.Pipeline.OCR = nil // rebuilt with the new provider on next use
-		c.deps.UI.Notify("provider: " + o.Provider + "/" + o.Model)
-		c.publish()
+		c.use(next, p)
 		return
 	}
-	c.deps.UI.Notify("no other provider could start")
+	c.deps.UI.Notify("no other model could start")
 }
 
 // stop cancels the in-flight analysis, if any.

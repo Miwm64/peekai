@@ -43,8 +43,9 @@ func run() error {
 	configPath := flag.String("config", "", "path to config.json (default: next to the peekai executable)")
 	showVersion := flag.Bool("version", false, "print version and exit")
 	once := flag.Bool("once", false, "analyze the screen once, print the answer and exit")
-	mode := flag.String("mode", "", "override config mode: image | ocr")
-	promptName := flag.String("prompt", "", "override the active prompt (name from prompts.list)")
+	mode := flag.String("mode", "", "start in this mode instead of capture.mode: image | ocr")
+	promptName := flag.String("prompt", "", "start with this prompt instead of prompts.default")
+	modelName := flag.String("model", "", "start with this model instead of ai.default_model")
 	out := flag.String("out", "", "with -once: also save the screenshot sent to this PNG file")
 	useConsole := flag.Bool("console", false, "print results in the terminal instead of on-screen windows")
 	flag.Parse()
@@ -70,16 +71,19 @@ func run() error {
 		fmt.Println("created default config:", path)
 	}
 	if *mode != "" {
-		cfg.Mode = *mode
+		cfg.Capture.Mode = *mode
 	}
 	if *promptName != "" {
-		cfg.Prompts.Active = *promptName
+		cfg.Prompts.Default = *promptName
+	}
+	if *modelName != "" {
+		cfg.AI.DefaultModel = *modelName
 	}
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	fmt.Printf("config: %s (mode=%s, provider=%s, model=%s)\n",
-		path, cfg.Mode, cfg.AI.Provider, cfg.AI.Model)
+	fmt.Printf("config: %s (mode=%s, model=%s, prompt=%s)\n",
+		path, cfg.Capture.Mode, cfg.AI.DefaultModel, cfg.Prompts.Default)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -106,17 +110,27 @@ func run() error {
 	return nil
 }
 
-// build creates the pipeline and the AI provider it uses.
+// defaultModel returns the config's default model with its provider.
+func defaultModel(cfg config.Config) config.ResolvedModel {
+	for _, m := range cfg.ResolvedModels() {
+		if m.Name == cfg.AI.DefaultModel {
+			return m
+		}
+	}
+	panic("validated config has no default model") // Validate guarantees it
+}
+
+// build creates the pipeline and the client for the default model.
 func build(cfg config.Config) (pipeline.Pipeline, ai.Provider, error) {
 	capturer, err := capture.New(cfg.Capture)
 	if err != nil {
 		return pipeline.Pipeline{}, nil, err
 	}
-	provider, err := ai.New(cfg.AI)
+	provider, err := ai.New(defaultModel(cfg))
 	if err != nil {
 		return pipeline.Pipeline{}, nil, err
 	}
-	return pipeline.Pipeline{Capturer: capturer, AI: provider, MaxImagePx: cfg.AI.MaxImagePx}, provider, nil
+	return pipeline.Pipeline{Capturer: capturer, AI: provider, MaxImagePx: cfg.Capture.MaxImagePx}, provider, nil
 }
 
 // listenWithReload runs the hotkey controller and restarts it with a
@@ -174,16 +188,14 @@ func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter, 
 	}
 	defer listener.Close()
 
-	// The first option is the provider already built above; alternatives
-	// are built on first switch.
-	var options []app.AIOption
-	for i, o := range cfg.AI.Options() {
-		newProvider := func() (ai.Provider, error) { return ai.New(o) }
-		if i == 0 {
-			newProvider = func() (ai.Provider, error) { return provider, nil }
+	// The default model's client is already built; the others are built
+	// on first switch.
+	options := app.OptionsFrom(cfg, func(m config.ResolvedModel) (ai.Provider, error) {
+		if m.Name == cfg.AI.DefaultModel {
+			return provider, nil
 		}
-		options = append(options, app.AIOption{Provider: o.Provider, Model: o.Model, New: newProvider})
-	}
+		return ai.New(m)
+	})
 
 	c := app.New(cfg, app.Deps{
 		Pipeline:  p,
@@ -242,15 +254,19 @@ func runOnce(ctx context.Context, cfg config.Config, out string) error {
 	if err != nil {
 		return err
 	}
+	m := defaultModel(cfg)
+	if cfg.Capture.Mode == config.ModeImage && !m.Vision {
+		return fmt.Errorf("model %q can't read images: use -mode ocr or a vision model (-model)", m.Name)
+	}
 	// Only build OCR when used, so image mode works without tesseract.
-	if cfg.Mode == config.ModeOCR {
+	if cfg.Capture.Mode == config.ModeOCR {
 		if p.OCR, err = ocr.New(cfg.OCR, provider); err != nil {
 			return err
 		}
 	}
 
-	fmt.Printf("asking %s (%s), mode %s, prompt %q…\n", cfg.AI.Provider, cfg.AI.Model, cfg.Mode, cfg.Prompts.Active)
-	res, err := p.Run(ctx, pipeline.Options{Mode: cfg.Mode, Prompt: cfg.Prompts.List[cfg.Prompts.Active]})
+	fmt.Printf("asking %s (%s via %s), mode %s, prompt %q…\n", m.Name, m.Model.Model, m.Provider.Name, cfg.Capture.Mode, cfg.Prompts.Default)
+	res, err := p.Run(ctx, pipeline.Options{Mode: cfg.Capture.Mode, Prompt: cfg.Prompts.List[cfg.Prompts.Default]})
 	if out != "" && res.Image != nil {
 		if err := savePNG(out, res.Image); err != nil {
 			return err

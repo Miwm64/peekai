@@ -18,10 +18,10 @@ import (
 // recorder is a ui.Presenter that reports every call on a channel.
 type recorder struct{ calls chan string }
 
-// Update drops the provider/model part of the header to keep expectations
+// Update drops the default model's part of the header to keep expectations
 // short; TestHeaderShowsProviderAndModel checks it.
 func (r *recorder) Update(c ui.Content) {
-	r.calls <- "update " + strings.Replace(c.Header(), " · ollama/qwen2.5vl:7b", "", 1) + " | " + c.Text
+	r.calls <- "update " + strings.Replace(c.Header(), " · qwen-local · free", "", 1) + " | " + c.Text
 }
 func (r *recorder) Show(v ui.View)    { r.calls <- "show " + v.String() }
 func (r *recorder) Hide(v ui.View)    { r.calls <- "hide " + v.String() }
@@ -71,8 +71,9 @@ func startWith(t *testing.T, mutate func(*config.Config), deps func(*Deps)) *har
 	t.Helper()
 	cfg := config.Default()
 	cfg.Prompts.List = map[string]string{"a": "A", "b": "B", "slow": "slow", "fail": "fail"}
-	cfg.Prompts.Active = "a"
-	cfg.AutoClear = true // most tests check one exchange; TestContext covers history
+	cfg.Prompts.Default = "a"
+	cfg.AI.AutoClear = true           // most tests check one exchange; TestContext covers history
+	cfg.AI.Models = cfg.AI.Models[:1] // just qwen-local; model tests set Deps.AI
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -88,7 +89,7 @@ func startWith(t *testing.T, mutate func(*config.Config), deps func(*Deps)) *har
 	}
 	c := New(cfg, d)
 	go func() { h.done <- c.Run(context.Background(), h.actions) }()
-	h.expect("update no result yet · " + cfg.Prompts.Active + " · image | ")
+	h.expect("update no result yet · " + cfg.Prompts.Default + " · image | ")
 	t.Cleanup(func() {
 		select {
 		case h.actions <- ActQuit:
@@ -185,8 +186,8 @@ func TestCyclePromptAndToggleMode(t *testing.T) {
 }
 
 func TestHeaderShowsProviderAndModel(t *testing.T) {
-	c := ui.Content{State: ui.Ready, Text: "x", Prompt: "explain", Mode: "image", Provider: "routerai", Model: "gpt-x"}
-	if h := c.Header(); !strings.Contains(h, "explain · image · routerai/gpt-x") {
+	c := ui.Content{State: ui.Ready, Text: "x", Prompt: "explain", Mode: "image", Model: "gpt-x", Free: true}
+	if h := c.Header(); !strings.Contains(h, "explain · image · gpt-x · free") {
 		t.Errorf("header = %q", h)
 	}
 	c.Stale = true
@@ -218,7 +219,7 @@ func TestHideAllKeepsRunning(t *testing.T) {
 }
 
 func TestRetriggerReplacesRun(t *testing.T) {
-	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
+	h := start(t, func(c *config.Config) { c.Prompts.Default = "slow" })
 	h.send(ActCapture)
 	h.expect("update ● thinking… · slow · image | ")
 	h.send(ActCyclePrompt) // slow → a (sorted: a, b, fail, slow); title updates at once
@@ -229,7 +230,7 @@ func TestRetriggerReplacesRun(t *testing.T) {
 }
 
 func TestErrorIsShownAsContent(t *testing.T) {
-	h := start(t, func(c *config.Config) { c.Prompts.Active = "fail" })
+	h := start(t, func(c *config.Config) { c.Prompts.Default = "fail" })
 	h.send(ActCapture)
 	h.expect("update ● thinking… · fail · image | ",
 		"notify error: ai: boom",
@@ -262,7 +263,7 @@ func TestClear(t *testing.T) {
 }
 
 func TestClearCancelsRun(t *testing.T) {
-	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
+	h := start(t, func(c *config.Config) { c.Prompts.Default = "slow" })
 	h.send(ActCapture)
 	h.expect("update ● thinking… · slow · image | ")
 	h.send(ActClear)
@@ -282,40 +283,40 @@ func (p prefixAI) Analyze(ctx context.Context, req ai.Request) (string, error) {
 	return p.prefix + a, err
 }
 
-func TestCycleProvider(t *testing.T) {
+func TestCycleModel(t *testing.T) {
 	h := startWith(t, nil, func(d *Deps) {
 		d.AI = []AIOption{
-			{Provider: "ollama", Model: "qwen2.5vl:7b", New: func() (ai.Provider, error) { return fakeAI{}, nil }},
-			{Provider: "grok", Model: "g1", New: func() (ai.Provider, error) { return prefixAI{"G:"}, nil }},
-			{Provider: "routerai", Model: "r1", New: func() (ai.Provider, error) { return nil, errors.New("no key") }},
+			{Name: "qwen-local", Vision: true, Free: true, New: func() (ai.Provider, error) { return fakeAI{}, nil }},
+			{Name: "g1", Vision: true, New: func() (ai.Provider, error) { return prefixAI{"G:"}, nil }},
+			{Name: "r1", Vision: true, New: func() (ai.Provider, error) { return nil, errors.New("no key") }},
 		}
 	})
 	h.send(ActCapture)
 	h.expect("update ● thinking… · a · image | ")
 	h.expectReady("A/image")
 
-	h.send(ActCycleProv)
-	h.expect("notify provider: grok/g1", "update previous answer · a · image · grok/g1 | A/image")
+	h.send(ActCycleModel)
+	h.expect("notify model: g1", "update previous answer · a · image · g1 | A/image")
 	h.send(ActCapture)
-	h.expect("update ● thinking… · a · image · grok/g1 | A/image")
+	h.expect("update ● thinking… · a · image · g1 | A/image")
 	select {
 	case got := <-h.calls:
-		if got != "update ✓ answer · a · image · grok/g1 · "+time.Now().Format("15:04")+" | G:A/image" {
+		if got != "update ✓ answer · a · image · g1 · "+time.Now().Format("15:04")+" | G:A/image" {
 			t.Fatalf("got %q", got)
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("no answer from grok")
 	}
 
-	h.send(ActCycleProv) // routerai can't start: skipped, back to ollama
-	h.expect("notify skipping routerai/r1: no key", "notify provider: ollama/qwen2.5vl:7b",
+	h.send(ActCycleModel) // routerai can't start: skipped, back to ollama
+	h.expect("notify skipping r1: no key", "notify model: qwen-local",
 		"update previous answer · a · image | G:A/image")
 }
 
-func TestCycleProviderWithOnlyOne(t *testing.T) {
+func TestCycleModelWithOnlyOne(t *testing.T) {
 	h := start(t, nil)
-	h.send(ActCycleProv)
-	h.expect("notify only one provider configured (add ai.alternatives)")
+	h.send(ActCycleModel)
+	h.expect("notify only one model configured (add more to ai.models)")
 }
 
 // historyAI answers with how many earlier exchanges it was sent.
@@ -326,7 +327,7 @@ func (historyAI) Analyze(_ context.Context, req ai.Request) (string, error) {
 }
 
 func TestContext(t *testing.T) {
-	h := startWith(t, func(c *config.Config) { c.AutoClear = false }, func(d *Deps) {
+	h := startWith(t, func(c *config.Config) { c.AI.AutoClear = false }, func(d *Deps) {
 		d.Pipeline.AI = historyAI{}
 	})
 	h.send(ActCapture)
@@ -374,8 +375,8 @@ func TestReloadHandsOverState(t *testing.T) {
 	calls := make(chan string, 64)
 	cfg := config.Default()
 	cfg.Prompts.List = map[string]string{"a": "A", "b": "B"}
-	cfg.Prompts.Active = "a"
-	cfg.AutoClear = false
+	cfg.Prompts.Default = "a"
+	cfg.AI.AutoClear = false
 	deps := Deps{
 		Pipeline:  pipeline.Pipeline{Capturer: screen{}, AI: fakeAI{}},
 		NewOCR:    func(ai.Provider) (pipeline.Recognizer, error) { return fakeOCR{}, nil },
@@ -426,7 +427,7 @@ func TestReloadHandsOverState(t *testing.T) {
 func TestReloadDropsPromptThatNoLongerExists(t *testing.T) {
 	cfg := config.Default()
 	cfg.Prompts.List = map[string]string{"a": "A", "b": "B"}
-	cfg.Prompts.Active = "a"
+	cfg.Prompts.Default = "a"
 	c := New(cfg, Deps{UI: &recorder{calls: make(chan string, 16)}, Pipeline: pipeline.Pipeline{AI: fakeAI{}}})
 	c.active = "b"
 	snap := c.Snapshot()
@@ -439,4 +440,58 @@ func TestReloadDropsPromptThatNoLongerExists(t *testing.T) {
 	if next.active != "a" {
 		t.Errorf("active = %q, want config's a", next.active)
 	}
+}
+
+func TestImageModeRefusesModelWithoutVision(t *testing.T) {
+	called := false
+	h := startWith(t, nil, func(d *Deps) {
+		d.AI = []AIOption{
+			{Name: "qwen-local", Vision: true, Free: true, New: func() (ai.Provider, error) { return fakeAI{}, nil }},
+			{Name: "llama", Vision: false, New: func() (ai.Provider, error) { return recordAI{called: &called}, nil }},
+		}
+	})
+	h.send(ActCycleModel)
+	h.expect("notify model: llama", "update no result yet · a · image · llama | ")
+	h.send(ActCapture)
+	msg := `model "llama" can't read images: switch to OCR mode or pick a vision model`
+	h.expect("notify "+msg, "update ✕ failed · a · image · llama | "+msg)
+	h.send(ActToggleMode) // OCR mode: the same model is fine
+	h.expect("notify mode: ocr", "update previous answer · a · ocr · llama | "+msg)
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · ocr · llama | ")
+	select {
+	case got := <-h.calls:
+		if !strings.HasPrefix(got, "update ✓ answer · a · ocr · llama") {
+			t.Fatalf("got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no answer in ocr mode")
+	}
+	if !called {
+		t.Error("ocr capture did not reach the model")
+	}
+}
+
+// recordAI notes that it was called; it is only ever sent text here.
+type recordAI struct{ called *bool }
+
+func (r recordAI) Analyze(_ context.Context, req ai.Request) (string, error) {
+	*r.called = true
+	if req.Image != nil {
+		return "", errors.New("got an image")
+	}
+	return "ok", nil
+}
+
+func TestSelectModelFromTray(t *testing.T) {
+	h := startWith(t, nil, func(d *Deps) {
+		d.AI = []AIOption{
+			{Name: "qwen-local", Vision: true, Free: true, New: func() (ai.Provider, error) { return fakeAI{}, nil }},
+			{Name: "g1", Vision: true, New: func() (ai.Provider, error) { return prefixAI{"G:"}, nil }},
+		}
+	})
+	h.send(ActSelectModel + "g1")
+	h.expect("notify model: g1", "update no result yet · a · image · g1 | ")
+	h.send(ActSelectModel + "nope")
+	h.expect("notify no model named nope")
 }

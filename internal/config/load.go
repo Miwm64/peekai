@@ -72,10 +72,16 @@ func Load(path string) (cfg Config, created bool, err error) {
 // Parse decodes config JSON on top of the defaults, so missing fields keep
 // their default values. Unknown fields are rejected to catch typos.
 func Parse(data []byte) (Config, error) {
+	if err := checkVersion(data); err != nil {
+		return Config{}, err
+	}
 	cfg := Default()
-	// A user-supplied prompt list replaces the defaults instead of merging.
-	defaultPrompts := cfg.Prompts.List
+	// Lists and maps from the file replace the defaults. Decoding into a
+	// non-empty slice would reuse its elements, so a model missing "model"
+	// would silently inherit the default model's ID.
+	def := cfg
 	cfg.Prompts.List = nil
+	cfg.AI.Providers, cfg.AI.Models, cfg.UI.Themes = nil, nil, nil
 
 	dec := json.NewDecoder(bytes.NewReader(data))
 	dec.DisallowUnknownFields()
@@ -83,7 +89,16 @@ func Parse(data []byte) (Config, error) {
 		return Config{}, err
 	}
 	if cfg.Prompts.List == nil {
-		cfg.Prompts.List = defaultPrompts
+		cfg.Prompts.List = def.Prompts.List
+	}
+	if cfg.AI.Providers == nil {
+		cfg.AI.Providers = def.AI.Providers
+	}
+	if cfg.AI.Models == nil {
+		cfg.AI.Models = def.AI.Models
+	}
+	if cfg.UI.Themes == nil {
+		cfg.UI.Themes = def.UI.Themes
 	}
 	return cfg, cfg.Validate()
 }
@@ -98,4 +113,32 @@ func Save(path string, cfg Config) error {
 		return err
 	}
 	return os.WriteFile(path, append(data, '\n'), 0o600)
+}
+
+// ErrOldFormat is returned for a config.json from before version 2.
+var ErrOldFormat = errors.New(`old config format (version 1): ` +
+	`see "Migrating to version 2" in the README, or delete the file to get new defaults`)
+
+// checkVersion rejects version 1 files before the strict decode, so the
+// user sees how to migrate instead of `unknown field "mode"`.
+func checkVersion(data []byte) error {
+	var probe struct {
+		Version *int            `json:"version"`
+		Mode    json.RawMessage `json:"mode"`
+		AI      struct {
+			Provider     json.RawMessage `json:"provider"`
+			Alternatives json.RawMessage `json:"alternatives"`
+		} `json:"ai"`
+	}
+	if err := json.Unmarshal(data, &probe); err != nil {
+		return err // the strict decode would fail the same way
+	}
+	if probe.Mode != nil || probe.AI.Provider != nil || probe.AI.Alternatives != nil ||
+		probe.Version == nil || *probe.Version < Version {
+		return ErrOldFormat
+	}
+	if *probe.Version > Version {
+		return fmt.Errorf("config.json is version %d, but this peekai reads version %d: update peekai", *probe.Version, Version)
+	}
+	return nil
 }

@@ -9,7 +9,8 @@ and other displays are included.
 - **Image or OCR.** Send the screenshot to a vision model, or send only the screen text
   (Tesseract or a vision model reads it).
 - **Any OpenAI-compatible provider.** Ollama (local), Gemini, OpenRouter, RouterAI,
-  Requesty, Grok or your own server. Switch between them with a shortcut.
+  Requesty, Grok or your own server. Define providers and models in `config.json` and
+  switch models with a shortcut or the tray.
 - **Conversation context.** Optionally follow up on earlier answers.
 - **Invisible to screenshots.** The overlay never captures itself, and screen sharing
   doesn't show it on macOS and Windows.
@@ -64,25 +65,29 @@ Start peekai. It runs in the background with a tray icon. Then use it from any a
 | Ctrl+Shift+H | hide all windows (a running request keeps going) |
 | Ctrl+Shift+N | next prompt |
 | Ctrl+Shift+M | switch image / OCR mode |
-| Ctrl+Shift+P | next provider (`ai` → `ai.alternatives`) |
+| Ctrl+Shift+P | next model (in `ai.models` order) |
 | Ctrl+Shift+C | copy the last answer |
 | Ctrl+Shift+X | clear: forget the answer and the AI context, cancel a running request |
 | Ctrl+Shift+R | reload `config.json` |
 | Ctrl+Shift+Q | quit |
 
 The popup's title line shows where things stand:
-`● thinking… · explain · image · ollama/qwen2.5vl:7b`, then
-`✓ answer · … · 14:02`. After you switch prompt, mode or provider, the answer stays
+`● thinking… · explain · image · qwen-local · free`, then
+`✓ answer · … · 14:02`. After you switch prompt, mode or model, the answer stays
 visible and is marked **previous answer**.
 
-The tray menu shows the same status, and has show/hide, **Reload config** and **Quit**.
+The tray menu shows the same status, and has a **Models** submenu (pick any model
+directly), show/hide, **Reload config** and **Quit**.
+
+Switching mode, prompt or model only affects the running app; `config.json` is never
+changed. The next start begins with the defaults from the file again.
 
 ### Command line
 
 ```bash
 peekai                     # run in the background with shortcuts (normal use)
 peekai -once               # analyze the screen once, print the answer, exit
-peekai -once -mode ocr -prompt translate -out sent.png
+peekai -once -mode ocr -prompt translate -model grok -out sent.png
 peekai -console            # shortcuts, but print results in the terminal
 peekai -config path/to/config.json
 peekai -version
@@ -96,34 +101,41 @@ On first start peekai writes `config.json` **next to the program**: next to
 
 ```json
 {
-  "mode": "image",
-  "auto_clear": true,
-  "hotkeys": { "capture": "Ctrl+Shift+S", "toggle_popup": "Ctrl+Shift+1", "…": "…" },
-  "capture": { "display": "active" },
-  "ocr": { "engine": "tesseract_cli", "lang": "eng", "path": "" },
+  "version": 2,
+  "capture": { "mode": "image", "display": "mouse", "max_image_px": 1600 },
+  "ocr": { "engine": "tesseract_cli", "lang": "eng+rus", "path": "" },
   "ai": {
-    "provider": "ollama",
-    "model": "qwen2.5vl:7b",
-    "base_url": "",
-    "api_key_env": "",
+    "default_model": "qwen-local",
+    "auto_clear": false,
     "timeout": "2m0s",
-    "max_image_px": 1600,
-    "alternatives": [
-      { "provider": "gemini", "model": "gemini-3.8-flash" },
-      { "provider": "openrouter", "model": "openrouter/free" }
+    "providers": [
+      { "name": "ollama",   "url": "http://localhost:11434/v1" },
+      { "name": "grok",     "url": "https://api.x.ai/v1", "key_env": "XAI_API_KEY" },
+      { "name": "routerai", "url": "https://routerai.ru/api/v1", "key_env": "ROUTERAI_API_KEY" }
+    ],
+    "models": [
+      { "name": "qwen-local", "provider": "ollama", "model": "qwen2.5vl:7b",
+        "vision": true, "free": true, "description": "local, private, slower" },
+      { "name": "grok", "provider": "grok", "model": "grok-4.7",
+        "vision": true, "free": false, "description": "xAI, prepaid credits" },
+      { "name": "deepseek-flash", "provider": "routerai", "model": "deepseek/deepseek-v4.1-flash",
+        "vision": true, "free": false, "description": "cheap, via RouterAI" }
     ]
   },
   "prompts": {
-    "active": "explain",
+    "default": "explain",
     "list": {
       "explain": "Explain what is on this screen concisely.",
       "translate": "Translate all text to English.",
       "answer": "Answer the question shown on screen. Be brief."
     }
   },
+  "hotkeys": { "capture": "Ctrl+Shift+S", "toggle_popup": "Ctrl+Shift+1", "…": "…" },
   "ui": {
-    "ticker": { "speed": 120, "height": 44, "opacity": 0.85, "position": "bottom", "start": "right" },
+    "theme": "dark",
+    "themes": [],
     "popup": { "width": 520, "max_height": 600, "opacity": 0.95, "autohide": "0s" },
+    "ticker": { "speed": 120, "height": 44, "opacity": 0.85, "position": "bottom", "start": "right" },
     "status": { "enabled": false }
   }
 }
@@ -131,42 +143,73 @@ On first start peekai writes `config.json` **next to the program**: next to
 
 | Key | Meaning |
 |---|---|
-| `mode` | `image` sends the screenshot; `ocr` sends only the screen text |
-| `auto_clear` | `true`: every capture starts a fresh AI conversation. `false`: earlier prompts and answers (text only) are sent as context until Ctrl+Shift+X |
-| `hotkeys.*` | `Ctrl`, `Shift`, `Alt`/`Option`, `Cmd`/`Win`/`Super` + a key (`A`–`Z`, `0`–`9`, `F1`–`F12`, `Space`, `Enter`, `Esc`, `Tab`, `Delete`, arrows) |
-| `capture.display` | `active` (under the mouse), `all`, or a display number like `"1"` |
-| `ocr.engine` | `tesseract_cli` (needs [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html)) or `llm` (the AI model reads the text; needs a vision model) |
-| `ocr.lang` | Tesseract languages, e.g. `eng`, `rus`, `eng+rus` |
-| `ai.provider` | a preset (see below) or `openai_compat` with your own `base_url` |
-| `ai.base_url`, `ai.api_key_env` | override the preset's address / key variable; empty = preset default |
+| `version` | config format; must be `2` |
+| `capture.mode` | mode at startup: `image` sends the screenshot, `ocr` only the screen text (Ctrl+Shift+M switches) |
+| `capture.display` | `mouse` (the display under the mouse), `main`, `all`, or a display number like `"1"` |
+| `capture.max_image_px` | longest side of the screenshot sent to the AI (`0` = full size) |
+| `ocr.engine` | `tesseract_cli` (local; needs [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html)) or `llm` (the current model reads the text; needs a vision model) |
+| `ocr.lang` | Tesseract languages joined with `+` (default `eng+rus`); `tesseract --list-langs` shows what's installed. Fewer languages = faster and more accurate |
+| `ai.default_model` | name of the model to start with |
+| `ai.auto_clear` | `true`: every capture starts a fresh AI conversation. `false`: earlier prompts and answers (text only) are sent as context until Ctrl+Shift+X |
 | `ai.timeout` | per request, e.g. `"90s"` |
-| `ai.max_image_px` | longest side of the screenshot sent to the AI (`0` = full size) |
-| `ai.alternatives` | more `{provider, model}` pairs for Ctrl+Shift+P |
+| `ai.providers` | API endpoints (see below) |
+| `ai.models` | models to use; Ctrl+Shift+P cycles them in this order |
+| `prompts.default` | prompt to start with (Ctrl+Shift+N cycles) |
 | `prompts.list` | named prompts; Go templates with `{{.Text}}` (OCR text), `{{.Mode}}`, `{{.Time}}` |
+| `hotkeys.*` | `Ctrl`, `Shift`, `Alt`/`Option`, `Cmd`/`Win`/`Super` + a key (`A`–`Z`, `0`–`9`, `F1`–`F12`, `Space`, `Enter`, `Esc`, `Tab`, `Delete`, arrows) |
+| `ui.theme` | look at startup; built in: `dark` (more themes are coming) |
 | `ui.ticker.start` | `right`: enters at the right edge; `left`: starts visible at the left |
 | `ui.popup.autohide` | hide the popup after this long, e.g. `"20s"` (`"0s"` = never) |
 | `ui.status.enabled` | small top-right pill with "thinking…" and notices |
 
-Unknown keys are rejected, so typos get caught.
+Unknown keys are rejected, so typos get caught. Lists you write (providers, models,
+prompts) replace the defaults completely.
 
-## AI providers
+## Providers and models
 
-All providers use the OpenAI chat API. API keys come from environment variables and
-never go in the config file.
+**A provider** is an OpenAI-compatible API endpoint:
 
-| `provider` | Address | Key variable | Cost |
-|---|---|---|---|
-| `ollama` | `http://localhost:11434/v1` | — | **free**, local, private |
-| `gemini` | Google AI Studio | `GEMINI_API_KEY` | **free tier** (daily limits) |
-| `openrouter` | openrouter.ai | `OPENROUTER_API_KEY` | `openrouter/free` is **free** (rate-limited); paid models too |
-| `routerai` | routerai.ru | `ROUTERAI_API_KEY` | paid |
-| `requesty` | router.requesty.ai | `REQUESTY_API_KEY` | paid |
-| `grok` | api.x.ai | `XAI_API_KEY` | paid (prepaid credits) |
-| `openai_compat` | your `base_url` | your `api_key_env` (optional) | LM Studio, llama.cpp, vLLM, OpenAI… |
+| Field | |
+|---|---|
+| `name` | your name for it, used by models |
+| `url` | base URL ending before `/chat/completions`, e.g. `https://api.x.ai/v1` |
+| `key_env` | environment variable holding the API key; leave it out for keyless servers (Ollama, LM Studio) |
 
-**Image mode needs a vision model**, e.g. `qwen2.5vl:7b` or `llama3.2-vision` in Ollama,
-`gemini-3.8-flash`, or `deepseek/deepseek-v4.1-flash`. Text-only models such as `llama3.1`
-work in OCR mode.
+**A model** is what you switch between:
+
+| Field | |
+|---|---|
+| `name` | shown in the title line and tray |
+| `provider` | a provider's `name` |
+| `model` | the provider's model ID |
+| `vision` | `true` if it reads images. In image mode, a model with `vision: false` is refused before anything is sent; use OCR mode for it |
+| `free` | shown as `free` in the title and tray |
+| `description` | shown in the tray's Models menu |
+| `reasoning_effort` | optional: `none`, `low`, `medium`, `high`. `none` makes "thinking" models (e.g. Gemini Flash) answer much faster |
+
+API keys come from environment variables and never go in the config file. A model whose
+provider's key isn't set is skipped when you switch to it.
+
+### Ready-to-paste providers
+
+```json
+{ "name": "gemini",     "url": "https://generativelanguage.googleapis.com/v1beta/openai", "key_env": "GEMINI_API_KEY" },
+{ "name": "openrouter", "url": "https://openrouter.ai/api/v1", "key_env": "OPENROUTER_API_KEY" },
+{ "name": "requesty",   "url": "https://router.requesty.ai/v1", "key_env": "REQUESTY_API_KEY" },
+{ "name": "lmstudio",   "url": "http://localhost:1234/v1" },
+{ "name": "openai",     "url": "https://api.openai.com/v1", "key_env": "OPENAI_API_KEY" }
+```
+
+And models for them:
+
+```json
+{ "name": "gemini-flash", "provider": "gemini", "model": "gemini-3.8-flash",
+  "vision": true, "free": true, "description": "free tier, daily limits", "reasoning_effort": "none" },
+{ "name": "or-free", "provider": "openrouter", "model": "openrouter/free",
+  "vision": true, "free": true, "description": "rotating free models" },
+{ "name": "llama-local", "provider": "ollama", "model": "llama3.1",
+  "vision": false, "free": true, "description": "text only: use OCR mode" }
+```
 
 ### Getting free keys
 
@@ -180,7 +223,39 @@ work in OCR mode.
 export GEMINI_API_KEY=...        # add to ~/.zshrc or ~/.bashrc to keep it
 ```
 
-A provider whose key isn't set is skipped when you switch to it.
+## Migrating to version 2
+
+peekai refuses a version 1 config with *"old config format (version 1)"*. Either delete
+`config.json` (peekai writes new defaults) or update it:
+
+| Version 1 | Version 2 |
+|---|---|
+| `mode` | `capture.mode` |
+| `auto_clear` | `ai.auto_clear` |
+| `capture.display: "active"` | `capture.display: "mouse"` |
+| `ai.max_image_px` | `capture.max_image_px` |
+| `ai.provider` + `ai.base_url` + `ai.api_key_env` | an entry in `ai.providers` (`name`, `url`, `key_env`) |
+| `ai.model` (+ `ai.alternatives`) | entries in `ai.models` (`name`, `provider`, `model`, `vision`, …) and `ai.default_model` |
+| `prompts.active` | `prompts.default` |
+| `hotkeys.cycle_provider` | `hotkeys.cycle_model` |
+| — | `"version": 2` at the top |
+
+Before:
+```json
+{ "mode": "ocr", "ai": { "provider": "ollama", "model": "qwen2.5vl:7b",
+  "alternatives": [ { "provider": "grok", "model": "grok-4.7" } ] } }
+```
+After:
+```json
+{ "version": 2,
+  "capture": { "mode": "ocr" },
+  "ai": {
+    "default_model": "qwen",
+    "providers": [ { "name": "ollama", "url": "http://localhost:11434/v1" },
+                   { "name": "grok", "url": "https://api.x.ai/v1", "key_env": "XAI_API_KEY" } ],
+    "models": [ { "name": "qwen", "provider": "ollama", "model": "qwen2.5vl:7b", "vision": true, "free": true },
+                { "name": "grok", "provider": "grok", "model": "grok-4.7", "vision": true } ] } }
+```
 
 ## Troubleshooting
 
@@ -188,9 +263,10 @@ A provider whose key isn't set is skipped when you switch to it.
 |---|---|
 | `failed to register … Accessibility` | macOS: allow peekai (or your terminal) in Privacy & Security → Accessibility, then restart it |
 | `cannot capture display` | macOS: allow Screen Recording, then restart |
-| `model "…" can't read images` | use a vision model, or switch to OCR mode (Ctrl+Shift+M) |
+| `model "…" can't read images` | the model is marked `vision: false` (or the provider says so): switch to OCR mode (Ctrl+Shift+M) or a vision model (Ctrl+Shift+P) |
+| `old config format (version 1)` | see [Migrating to version 2](#migrating-to-version-2) |
 | `401 … (check the key in X_API_KEY)` | the key in that variable is wrong. OpenRouter says "Missing Authentication header" even for wrong keys |
-| `context deadline exceeded` | the model is slow (local models while loading, "thinking" models): raise `ai.timeout` |
+| `context deadline exceeded` | the model is slow (local models while loading, "thinking" models): raise `ai.timeout`, or set `"reasoning_effort": "none"` on the model |
 | `unknown field "…"` | that config key doesn't exist (any more); remove it, or delete `config.json` to get fresh defaults |
 | startup errors are invisible in `peekai.app` | start it from a terminal (`peekai.app/Contents/MacOS/peekai`) to see them |
 

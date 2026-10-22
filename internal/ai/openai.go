@@ -15,14 +15,17 @@ type openAI struct {
 	name    string // provider name, used in errors
 	baseURL string
 	model   string
-	apiKey  string
-	keyEnv  string // where apiKey came from, for error hints
-	client  *http.Client
+	// reasoningEffort is sent only when set (see config.Model).
+	reasoningEffort string
+	apiKey          string
+	keyEnv          string // where apiKey came from, for error hints
+	client          *http.Client
 }
 
 type chatRequest struct {
-	Model    string        `json:"model"`
-	Messages []chatMessage `json:"messages"`
+	Model           string        `json:"model"`
+	Messages        []chatMessage `json:"messages"`
+	ReasoningEffort string        `json:"reasoning_effort,omitempty"`
 }
 
 type chatMessage struct {
@@ -69,7 +72,7 @@ func (p *openAI) Analyze(ctx context.Context, req Request) (string, error) {
 	}
 	msgs = append(msgs, msg)
 
-	body, err := json.Marshal(chatRequest{Model: p.model, Messages: msgs})
+	body, err := json.Marshal(chatRequest{Model: p.model, Messages: msgs, ReasoningEffort: p.reasoningEffort})
 	if err != nil {
 		return "", err
 	}
@@ -121,9 +124,16 @@ func looksLikeNoVision(msg string) bool {
 }
 
 // apiError extracts a readable message from an error response body.
+// Gemini wraps the whole body in a JSON array.
 // Servers use either {"error": {"message": "..."}} or {"error": "..."};
 // Ollama may nest a whole error body as JSON inside that message.
 func apiError(body []byte) string {
+	if trimmed := strings.TrimSpace(string(body)); strings.HasPrefix(trimmed, "[") {
+		var list []json.RawMessage
+		if json.Unmarshal(body, &list) == nil && len(list) > 0 {
+			return apiError(list[0])
+		}
+	}
 	var e struct {
 		Error json.RawMessage `json:"error"`
 	}

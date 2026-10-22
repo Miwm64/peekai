@@ -69,8 +69,8 @@ type Overlay struct {
 	visible  map[ui.View]bool
 	stopTick chan struct{} // closes to stop the running line animation
 
-	actions   chan string           // tray clicks, see Actions
-	tray      *gui.SystemTrayHandle // UI thread only
+	actions   chan string // tray clicks, see Actions
+	tray      trayState   // per OS, UI thread only
 	noticeGen int
 }
 

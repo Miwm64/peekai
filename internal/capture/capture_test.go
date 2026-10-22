@@ -18,10 +18,11 @@ func TestRectFor(t *testing.T) {
 		want          image.Rectangle
 		wantErr       bool
 	}{
-		{"active follows mouse", "active", onRight, true, right, false},
-		{"active on primary", "active", image.Pt(10, 10), true, primary, false},
-		{"active, mouse unknown", "active", onRight, false, primary, false},
-		{"active, mouse off-screen", "active", image.Pt(-500, 0), true, primary, false},
+		{"mouse follows mouse", "mouse", onRight, true, right, false},
+		{"mouse on primary", "mouse", image.Pt(10, 10), true, primary, false},
+		{"mouse unknown", "mouse", onRight, false, primary, false},
+		{"mouse off-screen", "mouse", image.Pt(-500, 0), true, primary, false},
+		{"main ignores mouse", "main", onRight, true, primary, false},
 		{"all", "all", onRight, true, image.Rect(0, 0, 3840, 1440), false},
 		{"index 0", "0", onRight, true, primary, false},
 		{"index 1", "1", image.Pt(10, 10), true, right, false},
@@ -43,7 +44,7 @@ func TestRectFor(t *testing.T) {
 }
 
 func TestRectForNoDisplays(t *testing.T) {
-	if _, err := rectFor("active", nil, image.Point{}, false); err == nil {
+	if _, err := rectFor("mouse", nil, image.Point{}, false); err == nil {
 		t.Error("want error with no displays")
 	}
 }
