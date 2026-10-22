@@ -136,6 +136,10 @@ func setVisible(title string, visible bool) bool {
 // background: skip-taskbar/pager (set in place) keep windows out of panels.
 func background() {}
 
+// X11 has no way to keep a window out of screenshots; callers hide the
+// overlay while capturing instead.
+const excludesFromCapture = false
+
 // screen returns the bounds of the monitor under the mouse.
 func screen() Rect {
 	var mouse image.Point

@@ -13,6 +13,11 @@ type Options struct {
 	NoFocus      bool // showing the window does not steal keyboard focus
 }
 
+// ExcludesFromCapture reports whether placed windows are left out of
+// screenshots by the OS (macOS, Windows). Where it is false (X11), hide the
+// overlay while capturing.
+const ExcludesFromCapture = excludesFromCapture
+
 // Place finds our window titled title, keeps it above all other windows and
 // moves it to r. It must run on the UI (main) thread. It reports whether
 // the window was found.

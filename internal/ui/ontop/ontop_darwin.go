@@ -22,6 +22,8 @@ static int peekaiPlace(const char *title, double x, double y, double w, double h
 		[win setCollectionBehavior:b];
 		[win setHidesOnDeactivate:NO];
 		[win setIgnoresMouseEvents:clickThrough ? YES : NO];
+		// Keep our overlay out of screenshots and screen recordings.
+		[win setSharingType:NSWindowSharingNone];
 		// Cocoa's origin is bottom-left of the main screen.
 		[win setFrame:NSMakeRect(x, screen.size.height - y - h, w, h) display:YES];
 		return 1;
@@ -93,6 +95,8 @@ func place(title string, r Rect, opts Options) bool {
 }
 
 func background() { C.peekaiAccessory() }
+
+const excludesFromCapture = true
 
 func debug(title string) string {
 	t := C.CString(title)

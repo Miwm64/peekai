@@ -20,24 +20,26 @@ var (
 	procMonitorFromPoint     = user32.NewProc("MonitorFromPoint")
 	procGetMonitorInfoW      = user32.NewProc("GetMonitorInfoW")
 	procGetDpiForWindow      = user32.NewProc("GetDpiForWindow")
+	procSetDisplayAffinity   = user32.NewProc("SetWindowDisplayAffinity")
 )
 
 const (
-	gwlExStyle       = ^uintptr(19) // -20
-	wsExTransparent  = 0x00000020
-	wsExToolWindow   = 0x00000080 // no taskbar button
-	wsExLayered      = 0x00080000
-	wsExNoActivate   = 0x08000000
-	hwndTopmost      = ^uintptr(0) // -1
-	swpNoSize        = 0x0001
-	swpNoMove        = 0x0002
-	swpNoActivate    = 0x0010
-	swpShowWindow    = 0x0040
-	swpFrameChanged  = 0x0020
-	swHide           = 0
-	swShowNoActivate = 4
-	lwaAlpha         = 0x2
-	monitorNearest   = 2
+	gwlExStyle        = ^uintptr(19) // -20
+	wsExTransparent   = 0x00000020
+	wsExToolWindow    = 0x00000080 // no taskbar button
+	wsExLayered       = 0x00080000
+	wsExNoActivate    = 0x08000000
+	hwndTopmost       = ^uintptr(0) // -1
+	swpNoSize         = 0x0001
+	swpNoMove         = 0x0002
+	swpNoActivate     = 0x0010
+	swpShowWindow     = 0x0040
+	swpFrameChanged   = 0x0020
+	swHide            = 0
+	swShowNoActivate  = 4
+	lwaAlpha          = 0x2
+	wdaExcludeCapture = 0x11 // WDA_EXCLUDEFROMCAPTURE, Windows 10 2004+
+	monitorNearest    = 2
 )
 
 type rect32 struct{ Left, Top, Right, Bottom int32 }
@@ -79,6 +81,8 @@ func place(title string, r Rect, opts Options) bool {
 		ex &^= wsExTransparent
 	}
 	procSetWindowLongPtrW.Call(hwnd, gwlExStyle, ex)
+	// Keep our overlay out of screenshots and screen recordings.
+	procSetDisplayAffinity.Call(hwnd, wdaExcludeCapture)
 
 	// Sizes are logical; Windows positions in physical pixels.
 	scale := 1.0
@@ -108,6 +112,8 @@ func setVisible(title string, visible bool) bool {
 
 // background: tool windows (set in place) already stay off the taskbar.
 func background() {}
+
+const excludesFromCapture = true
 
 // screen returns the work area (without taskbar) of the monitor under the
 // mouse, in physical pixels.
