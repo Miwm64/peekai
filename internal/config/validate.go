@@ -46,6 +46,11 @@ func (c Config) Validate() error {
 	if c.AI.Model == "" {
 		add("ai.model: must not be empty")
 	}
+	for i, alt := range c.AI.Alternatives {
+		if alt.Provider == "" || alt.Model == "" {
+			add("ai.alternatives[%d]: provider and model are required", i)
+		}
+	}
 	if c.AI.Timeout <= 0 {
 		add("ai.timeout: must be positive")
 	}

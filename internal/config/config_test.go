@@ -88,6 +88,7 @@ func TestParseErrors(t *testing.T) {
 		{"bad opacity", `{"ui": {"popup": {"opacity": 1.5}}}`, "ui.popup.opacity"},
 		{"bad position", `{"ui": {"ticker": {"position": "left"}}}`, "ui.ticker.position"},
 		{"bad start", `{"ui": {"ticker": {"start": "middle"}}}`, "ui.ticker.start"},
+		{"alternative without model", `{"ai": {"alternatives": [{"provider": "grok"}]}}`, "ai.alternatives[0]"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -139,5 +140,25 @@ func TestPathFor(t *testing.T) {
 				t.Errorf("path = %s, want %s", got, want)
 			}
 		})
+	}
+}
+
+func TestAIOptions(t *testing.T) {
+	cfg, err := Parse([]byte(`{"ai": {"provider": "ollama", "model": "m1", "timeout": "9s",
+		"alternatives": [{"provider": "grok", "model": "g1"}, {"provider": "openai_compat", "base_url": "http://x", "model": "m2"}]}}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	opts := cfg.AI.Options()
+	if len(opts) != 3 {
+		t.Fatalf("len = %d", len(opts))
+	}
+	if opts[0].Provider != "ollama" || opts[1].Provider != "grok" || opts[1].Model != "g1" || opts[2].BaseURL != "http://x" {
+		t.Errorf("options = %+v", opts)
+	}
+	for i, o := range opts {
+		if time.Duration(o.Timeout) != 9*time.Second || o.MaxImagePx != 1600 || o.Alternatives != nil {
+			t.Errorf("option %d lost shared settings: %+v", i, o)
+		}
 	}
 }

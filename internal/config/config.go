@@ -13,13 +13,17 @@ const (
 )
 
 type Config struct {
-	Mode    string  `json:"mode"`
-	Hotkeys Hotkeys `json:"hotkeys"`
-	Capture Capture `json:"capture"`
-	OCR     OCR     `json:"ocr"`
-	AI      AI      `json:"ai"`
-	Prompts Prompts `json:"prompts"`
-	UI      UI      `json:"ui"`
+	Mode string `json:"mode"`
+	// AutoClear starts a fresh AI conversation on every capture. When
+	// false, earlier prompts and answers are sent along as context until
+	// the clear shortcut. It never clears the windows.
+	AutoClear bool    `json:"auto_clear"`
+	Hotkeys   Hotkeys `json:"hotkeys"`
+	Capture   Capture `json:"capture"`
+	OCR       OCR     `json:"ocr"`
+	AI        AI      `json:"ai"`
+	Prompts   Prompts `json:"prompts"`
+	UI        UI      `json:"ui"`
 }
 
 type Hotkeys struct {
@@ -30,8 +34,10 @@ type Hotkeys struct {
 	ToggleTicker string `json:"toggle_ticker"`
 	HideAll      string `json:"hide_all"`
 	CyclePrompt  string `json:"cycle_prompt"`
-	ToggleMode   string `json:"toggle_mode"`
-	CopyResult   string `json:"copy_result"`
+	// CycleProvider switches between ai and ai.alternatives.
+	CycleProvider string `json:"cycle_provider"`
+	ToggleMode    string `json:"toggle_mode"`
+	CopyResult    string `json:"copy_result"`
 	// Clear forgets the last answer and cancels a running analysis.
 	Clear string `json:"clear"`
 	Quit  string `json:"quit"`
@@ -40,15 +46,16 @@ type Hotkeys struct {
 // Bindings returns action name → shortcut for every hotkey.
 func (h Hotkeys) Bindings() map[string]string {
 	return map[string]string{
-		"capture":       h.Capture,
-		"toggle_popup":  h.TogglePopup,
-		"toggle_ticker": h.ToggleTicker,
-		"hide_all":      h.HideAll,
-		"cycle_prompt":  h.CyclePrompt,
-		"toggle_mode":   h.ToggleMode,
-		"copy_result":   h.CopyResult,
-		"clear":         h.Clear,
-		"quit":          h.Quit,
+		"capture":        h.Capture,
+		"toggle_popup":   h.TogglePopup,
+		"toggle_ticker":  h.ToggleTicker,
+		"hide_all":       h.HideAll,
+		"cycle_prompt":   h.CyclePrompt,
+		"cycle_provider": h.CycleProvider,
+		"toggle_mode":    h.ToggleMode,
+		"copy_result":    h.CopyResult,
+		"clear":          h.Clear,
+		"quit":           h.Quit,
 	}
 }
 
@@ -74,6 +81,31 @@ type AI struct {
 	APIKeyEnv  string   `json:"api_key_env"`
 	Timeout    Duration `json:"timeout"`
 	MaxImagePx int      `json:"max_image_px"`
+	// Alternatives are more providers to switch to with cycle_provider.
+	// Timeout and MaxImagePx are shared.
+	Alternatives []AIAlternative `json:"alternatives"`
+}
+
+// AIAlternative is another provider/model; empty fields work as in AI.
+type AIAlternative struct {
+	Provider  string `json:"provider"`
+	BaseURL   string `json:"base_url,omitempty"`
+	Model     string `json:"model"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+}
+
+// Options returns the main provider followed by the alternatives, each as
+// a complete AI config.
+func (a AI) Options() []AI {
+	opts := []AI{a}
+	for _, alt := range a.Alternatives {
+		o := a
+		o.Provider, o.BaseURL, o.Model, o.APIKeyEnv = alt.Provider, alt.BaseURL, alt.Model, alt.APIKeyEnv
+		o.Alternatives = nil
+		opts = append(opts, o)
+	}
+	opts[0].Alternatives = nil
+	return opts
 }
 
 type Prompts struct {
@@ -115,15 +147,16 @@ func Default() Config {
 	return Config{
 		Mode: ModeImage,
 		Hotkeys: Hotkeys{
-			Capture:      "Ctrl+Shift+S",
-			TogglePopup:  "Ctrl+Shift+1",
-			ToggleTicker: "Ctrl+Shift+2",
-			HideAll:      "Ctrl+Shift+H",
-			CyclePrompt:  "Ctrl+Shift+N",
-			ToggleMode:   "Ctrl+Shift+M",
-			CopyResult:   "Ctrl+Shift+C",
-			Clear:        "Ctrl+Shift+X",
-			Quit:         "Ctrl+Shift+Q",
+			Capture:       "Ctrl+Shift+S",
+			TogglePopup:   "Ctrl+Shift+1",
+			ToggleTicker:  "Ctrl+Shift+2",
+			HideAll:       "Ctrl+Shift+H",
+			CyclePrompt:   "Ctrl+Shift+N",
+			CycleProvider: "Ctrl+Shift+P",
+			ToggleMode:    "Ctrl+Shift+M",
+			CopyResult:    "Ctrl+Shift+C",
+			Clear:         "Ctrl+Shift+X",
+			Quit:          "Ctrl+Shift+Q",
 		},
 		Capture: Capture{Display: "active"},
 		OCR:     OCR{Engine: "tesseract_cli", Lang: "eng"},
