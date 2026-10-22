@@ -14,9 +14,10 @@ import (
 // FileName is the config file kept next to the peekai executable.
 const FileName = "config.json"
 
-// DefaultPath returns config.json next to the peekai executable, so the app
-// is portable. Under `go run` the binary lives in a temporary build dir, so
-// the current directory is used instead.
+// DefaultPath returns config.json next to the peekai executable (or next
+// to peekai.app on macOS), so the app is portable. Under `go run` the
+// binary lives in a temporary build dir, so the current directory is used
+// instead.
 func DefaultPath() (string, error) {
 	exe, err := os.Executable()
 	if err != nil {
@@ -36,7 +37,14 @@ func pathFor(exe string, getwd func() (string, error)) (string, error) {
 		}
 		return filepath.Join(dir, FileName), nil
 	}
-	return filepath.Join(filepath.Dir(exe), FileName), nil
+	// In a macOS app bundle the binary sits in peekai.app/Contents/MacOS;
+	// keep the config next to the .app where people can find it.
+	dir := filepath.Dir(exe)
+	if bundle := filepath.Dir(filepath.Dir(dir)); strings.HasSuffix(bundle, ".app") &&
+		filepath.Base(dir) == "MacOS" && filepath.Base(filepath.Dir(dir)) == "Contents" {
+		dir = filepath.Dir(bundle)
+	}
+	return filepath.Join(dir, FileName), nil
 }
 
 // Load reads the config at path. If the file does not exist, the default

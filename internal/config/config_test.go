@@ -129,6 +129,8 @@ func TestPathFor(t *testing.T) {
 		{"installed binary", "/opt/peekai/peekai", "/opt/peekai/config.json"},
 		{"windows-style dir", "/apps/peekai/peekai.exe", "/apps/peekai/config.json"},
 		{"go run", "/tmp/go-build123/b001/exe/peekai", "/work/peekai/config.json"},
+		{"macOS app bundle", "/Applications/peekai.app/Contents/MacOS/peekai", "/Applications/config.json"},
+		{"folder named MacOS outside a bundle", "/tools/MacOS/peekai", "/tools/MacOS/config.json"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
