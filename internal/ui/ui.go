@@ -2,7 +2,10 @@
 // sub-packages (console, and the on-screen overlay).
 package ui
 
-import "time"
+import (
+	"fmt"
+	"time"
+)
 
 // View is one of the two windows.
 type View int
@@ -40,6 +43,7 @@ type Content struct {
 	Mode     string
 	Provider string
 	Model    string
+	Context  int       // earlier exchanges the AI will see with the next capture
 	At       time.Time // when the answer arrived
 }
 
@@ -59,6 +63,9 @@ type Presenter interface {
 // "✓ answer · explain · image · ollama/qwen2.5vl:7b · 14:02".
 func (c Content) Header() string {
 	meta := c.Prompt + " · " + c.Mode + " · " + c.Provider + "/" + c.Model
+	if c.Context > 0 {
+		meta += fmt.Sprintf(" · ctx %d", c.Context)
+	}
 	switch {
 	case c.State == Thinking:
 		return "● thinking… · " + meta
