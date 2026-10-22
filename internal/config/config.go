@@ -38,6 +38,8 @@ type Hotkeys struct {
 	CycleProvider string `json:"cycle_provider"`
 	ToggleMode    string `json:"toggle_mode"`
 	CopyResult    string `json:"copy_result"`
+	// ReloadConfig re-reads config.json without restarting.
+	ReloadConfig string `json:"reload_config"`
 	// Clear forgets the last answer and cancels a running analysis.
 	Clear string `json:"clear"`
 	Quit  string `json:"quit"`
@@ -54,6 +56,7 @@ func (h Hotkeys) Bindings() map[string]string {
 		"cycle_provider": h.CycleProvider,
 		"toggle_mode":    h.ToggleMode,
 		"copy_result":    h.CopyResult,
+		"reload_config":  h.ReloadConfig,
 		"clear":          h.Clear,
 		"quit":           h.Quit,
 	}
@@ -156,6 +159,7 @@ func Default() Config {
 			CycleProvider: "Ctrl+Shift+P",
 			ToggleMode:    "Ctrl+Shift+M",
 			CopyResult:    "Ctrl+Shift+C",
+			ReloadConfig:  "Ctrl+Shift+R",
 			Clear:         "Ctrl+Shift+X",
 			Quit:          "Ctrl+Shift+Q",
 		},
