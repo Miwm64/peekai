@@ -103,7 +103,7 @@ On first start peekai writes `config.json` **next to the program**: next to
 {
   "version": 2,
   "capture": { "mode": "image", "display": "mouse", "max_image_px": 1600 },
-  "ocr": { "engine": "tesseract_cli", "lang": "eng", "path": "" },
+  "ocr": { "engine": "tesseract_cli", "lang": "eng+rus", "path": "" },
   "ai": {
     "default_model": "qwen-local",
     "auto_clear": false,
@@ -148,7 +148,7 @@ On first start peekai writes `config.json` **next to the program**: next to
 | `capture.display` | `mouse` (the display under the mouse), `main`, `all`, or a display number like `"1"` |
 | `capture.max_image_px` | longest side of the screenshot sent to the AI (`0` = full size) |
 | `ocr.engine` | `tesseract_cli` (local; needs [Tesseract](https://tesseract-ocr.github.io/tessdoc/Installation.html)) or `llm` (the current model reads the text; needs a vision model) |
-| `ocr.lang` | Tesseract languages, e.g. `eng`, `rus`, `eng+rus` |
+| `ocr.lang` | Tesseract languages joined with `+` (default `eng+rus`); `tesseract --list-langs` shows what's installed. Fewer languages = faster and more accurate |
 | `ai.default_model` | name of the model to start with |
 | `ai.auto_clear` | `true`: every capture starts a fresh AI conversation. `false`: earlier prompts and answers (text only) are sent as context until Ctrl+Shift+X |
 | `ai.timeout` | per request, e.g. `"90s"` |

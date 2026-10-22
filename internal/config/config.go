@@ -197,7 +197,7 @@ func Default() Config {
 	return Config{
 		Version: Version,
 		Capture: Capture{Mode: ModeImage, Display: "mouse", MaxImagePx: 1600},
-		OCR:     OCR{Engine: "tesseract_cli", Lang: "eng"},
+		OCR:     OCR{Engine: "tesseract_cli", Lang: "eng+rus"},
 		AI: AI{
 			DefaultModel: "qwen-local",
 			Timeout:      Duration(2 * time.Minute), // local models can take >60s on first load
