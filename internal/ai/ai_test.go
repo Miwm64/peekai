@@ -228,3 +228,19 @@ func TestHistoryIsSentAsMessages(t *testing.T) {
 		t.Errorf("messages = %+v", body.Messages)
 	}
 }
+
+func TestKeyIsTrimmedAndAuthErrorNamesEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "  'sk-or-123'\n")
+	srv, req, _ := fakeServer(t, http.StatusUnauthorized, `{"error":{"message":"Missing Authentication header","code":401}}`)
+	p, err := New(cfgFor("openrouter", srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Analyze(context.Background(), Request{Prompt: "x"})
+	if h := req.Header.Get("Authorization"); h != "Bearer sk-or-123" {
+		t.Errorf("Authorization = %q", h)
+	}
+	if err == nil || !strings.Contains(err.Error(), "check the key in OPENROUTER_API_KEY") {
+		t.Errorf("err = %v", err)
+	}
+}

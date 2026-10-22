@@ -50,7 +50,9 @@ func New(cfg config.AI) (Provider, error) {
 	keyEnv := cmp.Or(cfg.APIKeyEnv, p.keyEnv)
 	var key string
 	if keyEnv != "" {
-		key = os.Getenv(keyEnv)
+		// Copy-pasted keys often carry spaces or quotes; providers then
+		// reject them with confusing messages.
+		key = strings.Trim(strings.TrimSpace(os.Getenv(keyEnv)), `"'`)
 		// Presets with a key env need it; a generic server may run keyless.
 		if key == "" && p.keyEnv != "" {
 			return nil, fmt.Errorf("%s: set the API key in the %s environment variable", cfg.Provider, keyEnv)
@@ -62,6 +64,7 @@ func New(cfg config.AI) (Provider, error) {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   cfg.Model,
 		apiKey:  key,
+		keyEnv:  keyEnv,
 		client:  &http.Client{Timeout: time.Duration(cfg.Timeout)},
 	}, nil
 }
