@@ -24,58 +24,55 @@ func (o *Overlay) Actions() <-chan string { return o.actions }
 // startTray creates the tray icon. UI thread only. A missing tray (some
 // Linux desktops) is not fatal: everything still works by hotkey.
 func (o *Overlay) startTray() {
-	h, err := o.app.SetSystemTray(o.trayCfg(ui.Content{}))
-	if err != nil {
+	if err := o.tray.start(o, trayMenu(ui.Content{}), trayTooltip(ui.Content{})); err != nil {
 		fmt.Fprintln(os.Stderr, "peekai: no tray icon:", err)
-		return
 	}
-	o.tray = h
 }
 
 // updateTray shows c in the tray menu and tooltip. UI thread only.
 func (o *Overlay) updateTray(c ui.Content) {
-	if o.tray != nil {
-		o.app.UpdateSystemTray(o.tray, o.trayCfg(c))
+	o.tray.update(o, trayMenu(c), trayTooltip(c))
+}
+
+// onTrayAction passes a menu click to the controller.
+func (o *Overlay) onTrayAction(id string) {
+	if id == trayStatusID || id == "" {
+		return
+	}
+	select {
+	case o.actions <- id:
+	default: // controller busy reloading; drop the click
 	}
 }
 
-func (o *Overlay) trayCfg(c ui.Content) gui.SystemTrayCfg {
-	status := c.Header()
+func trayStatus(c ui.Content) string {
 	if c.Model == "" {
-		status = "starting…"
+		return "starting…"
 	}
+	return c.Header()
+}
+
+func trayTooltip(c ui.Content) string { return "peekai — " + trayStatus(c) }
+
+// trayMenu is the tray menu for c: status, a Models submenu, show/hide,
+// reload and quit. Item IDs are controller action names.
+func trayMenu(c ui.Content) []gui.NativeMenuItemCfg {
 	menu := []gui.NativeMenuItemCfg{
-		{ID: trayStatusID, Text: status, Disabled: true},
+		{ID: trayStatusID, Text: trayStatus(c), Disabled: true},
 		{Separator: true},
 	}
-	// A section, not a submenu: go-gui's macOS tray also lists submenu
-	// items at the end of the top-level menu (it builds the menu from the
-	// flattened item list), so every model would show twice.
 	if len(c.Models) > 0 {
-		menu = append(menu, gui.NativeMenuItemCfg{ID: trayStatusID, Text: "Models", Disabled: true})
-		menu = append(menu, modelItems(c)...)
-		menu = append(menu, gui.NativeMenuItemCfg{Separator: true})
+		menu = append(menu,
+			gui.NativeMenuItemCfg{Text: "Models", Submenu: modelItems(c)},
+			gui.NativeMenuItemCfg{Separator: true})
 	}
-	return gui.SystemTrayCfg{
-		Tooltip: "peekai — " + status,
-		IconPNG: trayIcon,
-		Menu: append(menu, []gui.NativeMenuItemCfg{
-			{ID: "toggle_popup", Text: "Show / hide popup"},
-			{ID: "toggle_ticker", Text: "Show / hide running line"},
-			{Separator: true},
-			{ID: "reload_config", Text: "Reload config"},
-			{ID: "quit", Text: "Quit peekai"},
-		}...),
-		OnAction: func(id string) {
-			if id == trayStatusID {
-				return
-			}
-			select {
-			case o.actions <- id:
-			default: // controller busy reloading; drop the click
-			}
-		},
-	}
+	return append(menu,
+		gui.NativeMenuItemCfg{ID: "toggle_popup", Text: "Show / hide popup"},
+		gui.NativeMenuItemCfg{ID: "toggle_ticker", Text: "Show / hide running line"},
+		gui.NativeMenuItemCfg{Separator: true},
+		gui.NativeMenuItemCfg{ID: "reload_config", Text: "Reload config"},
+		gui.NativeMenuItemCfg{ID: "quit", Text: "Quit peekai"},
+	)
 }
 
 // modelItems lists the configured models as "name — description", with
