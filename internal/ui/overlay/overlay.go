@@ -33,7 +33,7 @@ const (
 	noticeAfter = 2 * time.Second
 	frame       = time.Second / 60
 	tickerInset = 16 // gap before the running line's text, px
-	tickerLift  = 8  // moves the running line's text up, px
+	tickerLift  = 6  // moves the running line's text up, px
 )
 
 var (
@@ -47,9 +47,9 @@ type popupState struct{ content ui.Content }
 type textState struct{ text string }
 
 type tickerState struct {
-	text   string
-	offset float32 // how far the text has moved left, in px
-	textW  float32
+	text  string
+	x     float32 // left edge of the text in the bar, px; grows as it moves right
+	textW float32
 }
 
 // Overlay implements ui.Presenter. Create it with New and start it with Run
@@ -253,14 +253,14 @@ func (o *Overlay) startTicker(line string, place bool) {
 		st := gui.State[tickerState](o.ticker)
 		st.text = line
 		st.textW = o.ticker.TextWidth(line, tickerStyle())
-		st.offset = -tickerInset // visible at once; later loops enter from the right
+		st.x = tickerInset // visible at once; later loops enter from the left
 		o.ticker.InvalidateLayout()
 	})
 
 	go o.animate(stop)
 }
 
-// animate moves the running line left at the configured speed, looping.
+// animate moves the running line right at the configured speed, looping.
 func (o *Overlay) animate(stop chan struct{}) {
 	t := time.NewTicker(frame)
 	defer t.Stop()
@@ -274,10 +274,9 @@ func (o *Overlay) animate(stop chan struct{}) {
 			last = now
 			o.ticker.QueueCommand(func(w *gui.Window) {
 				st := gui.State[tickerState](w)
-				st.offset += float32(o.cfg.Ticker.Speed) * dt
-				if st.offset > st.textW {
-					winW, _ := w.WindowSize()
-					st.offset = -float32(winW)
+				st.x += float32(o.cfg.Ticker.Speed) * dt
+				if winW, _ := w.WindowSize(); st.x > float32(winW) {
+					st.x = -st.textW // gone off the right: re-enter from the left
 				}
 				w.InvalidateRender()
 			})
@@ -333,7 +332,7 @@ func (o *Overlay) tickerView(w *gui.Window) gui.View {
 		Clip:    true,
 		Content: []gui.View{gui.Row(gui.ContainerCfg{
 			// go-gui draws the line's text low in its box; lift it to center it.
-			TransformFn: func() gui.Transform { return gui.Translate(-gui.State[tickerState](w).offset, -tickerLift) },
+			TransformFn: func() gui.Transform { return gui.Translate(gui.State[tickerState](w).x, -tickerLift) },
 			Content:     []gui.View{gui.Text(gui.TextCfg{Text: st.text, Mode: gui.TextModeSingleLine, TextStyle: tickerStyle()})},
 		})},
 	})
