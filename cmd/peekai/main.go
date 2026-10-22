@@ -131,9 +131,21 @@ func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter) 
 	}
 	defer listener.Close()
 
+	// The first option is the provider already built above; alternatives
+	// are built on first switch.
+	var options []app.AIOption
+	for i, o := range cfg.AI.Options() {
+		newProvider := func() (ai.Provider, error) { return ai.New(o) }
+		if i == 0 {
+			newProvider = func() (ai.Provider, error) { return provider, nil }
+		}
+		options = append(options, app.AIOption{Provider: o.Provider, Model: o.Model, New: newProvider})
+	}
+
 	c := app.New(cfg, app.Deps{
 		Pipeline:  p,
-		NewOCR:    func() (pipeline.Recognizer, error) { return ocr.New(cfg.OCR, provider) },
+		AI:        options,
+		NewOCR:    func(current ai.Provider) (pipeline.Recognizer, error) { return ocr.New(cfg.OCR, current) },
 		UI:        presenter,
 		Clipboard: clipboard.WriteAll,
 	})

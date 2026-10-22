@@ -11,6 +11,7 @@ import (
 	"slices"
 	"time"
 
+	"github.com/Miwm64/peekai/internal/ai"
 	"github.com/Miwm64/peekai/internal/config"
 	"github.com/Miwm64/peekai/internal/pipeline"
 	"github.com/Miwm64/peekai/internal/ui"
@@ -23,6 +24,7 @@ const (
 	ActToggleTicker = "toggle_ticker"
 	ActHideAll      = "hide_all"
 	ActCyclePrompt  = "cycle_prompt"
+	ActCycleProv    = "cycle_provider"
 	ActToggleMode   = "toggle_mode"
 	ActCopyResult   = "copy_result"
 	ActClear        = "clear"
@@ -31,11 +33,22 @@ const (
 
 // Deps are the controller's collaborators.
 type Deps struct {
+	// Pipeline.AI is the provider used at start (AI[0]).
 	Pipeline pipeline.Pipeline
-	// NewOCR builds the OCR engine on first use of ocr mode.
-	NewOCR    func() (pipeline.Recognizer, error)
+	// AI lists the providers cycle_provider switches between. Empty means
+	// only Pipeline.AI, described by the config's ai section.
+	AI []AIOption
+	// NewOCR builds the OCR engine on first use of ocr mode, and again
+	// after a provider switch (the llm engine reads with the provider).
+	NewOCR    func(ai.Provider) (pipeline.Recognizer, error)
 	UI        ui.Presenter
 	Clipboard func(text string) error
+}
+
+// AIOption is one provider/model to switch to; New is called on first use.
+type AIOption struct {
+	Provider, Model string
+	New             func() (ai.Provider, error)
 }
 
 // Controller runs analyses on the capture shortcut and opens or closes
@@ -48,39 +61,51 @@ type Controller struct {
 	names   []string // sorted prompt names, for cycling
 	active  string
 
-	provider, model string
+	aiOpts    []AIOption
+	aiIdx     int
+	aiBuilt   map[int]ai.Provider
+	autoClear bool
+	history   []ai.Turn // AI conversation so far, sent with each capture
 
 	content ui.Content // what the windows display
 	last    string     // last answer, for copy
-	// answerPrompt/answerMode are the settings the shown answer was made
-	// with; when they differ from the current ones it is marked stale.
-	answerPrompt, answerMode string
-	visible                  map[ui.View]bool
+	// answer holds the settings the shown answer was made with; when they
+	// differ from the current ones it is marked stale.
+	answer  settings
+	visible map[ui.View]bool
 
 	runID   int
 	cancel  context.CancelFunc
 	results chan result
 }
 
+// settings are the choices an answer depends on.
+type settings struct{ prompt, mode, provider, model string }
+
 type result struct {
-	id     int
-	prompt string
-	mode   string
-	res    pipeline.Result
-	err    error
+	id  int
+	set settings
+	res pipeline.Result
+	err error
 }
 
 func New(cfg config.Config, deps Deps) *Controller {
+	opts := deps.AI
+	if len(opts) == 0 {
+		p := deps.Pipeline.AI
+		opts = []AIOption{{Provider: cfg.AI.Provider, Model: cfg.AI.Model, New: func() (ai.Provider, error) { return p, nil }}}
+	}
 	return &Controller{
-		deps:     deps,
-		provider: cfg.AI.Provider,
-		model:    cfg.AI.Model,
-		mode:     cfg.Mode,
-		prompts:  cfg.Prompts.List,
-		names:    slices.Sorted(maps.Keys(cfg.Prompts.List)),
-		active:   cfg.Prompts.Active,
-		visible:  map[ui.View]bool{},
-		results:  make(chan result),
+		deps:      deps,
+		aiOpts:    opts,
+		aiBuilt:   map[int]ai.Provider{0: deps.Pipeline.AI},
+		autoClear: cfg.AutoClear,
+		mode:      cfg.Mode,
+		prompts:   cfg.Prompts.List,
+		names:     slices.Sorted(maps.Keys(cfg.Prompts.List)),
+		active:    cfg.Prompts.Active,
+		visible:   map[ui.View]bool{},
+		results:   make(chan result),
 	}
 }
 
@@ -126,6 +151,8 @@ func (c *Controller) handle(ctx context.Context, action string) {
 		c.active = c.names[(i+1)%len(c.names)]
 		c.deps.UI.Notify("prompt: " + c.active)
 		c.publish()
+	case ActCycleProv:
+		c.cycleProvider()
 	case ActToggleMode:
 		if c.mode == config.ModeOCR {
 			c.mode = config.ModeImage
@@ -140,6 +167,7 @@ func (c *Controller) handle(ctx context.Context, action string) {
 		// Forget everything; open windows stay open and show the empty state.
 		c.stop()
 		c.last = ""
+		c.history = nil
 		c.content = ui.Content{State: ui.Idle}
 		c.publish()
 		c.deps.UI.Notify("cleared")
@@ -153,7 +181,7 @@ func (c *Controller) handle(ctx context.Context, action string) {
 func (c *Controller) start(ctx context.Context) {
 	c.stop()
 	if c.mode == config.ModeOCR && c.deps.Pipeline.OCR == nil {
-		engine, err := c.deps.NewOCR()
+		engine, err := c.deps.NewOCR(c.deps.Pipeline.AI)
 		if err != nil {
 			c.deps.UI.Notify("ocr: " + err.Error())
 			return
@@ -166,15 +194,19 @@ func (c *Controller) start(ctx context.Context) {
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	p := c.deps.Pipeline // copy: the goroutine never sees later changes
-	prompt, mode := c.active, c.mode
-	opts := pipeline.Options{Mode: mode, Prompt: c.prompts[prompt]}
+	set := c.current()
+	opts := pipeline.Options{Mode: set.mode, Prompt: c.prompts[set.prompt]}
 
+	if c.autoClear {
+		c.history = nil // fresh AI conversation; the windows keep the last answer
+	}
+	opts.History = slices.Clone(c.history)
 	c.content = ui.Content{State: ui.Thinking, Text: c.last}
 	c.publish()
 	go func() {
 		res, err := p.Run(runCtx, opts)
 		select {
-		case c.results <- result{id: id, prompt: prompt, mode: mode, res: res, err: err}:
+		case c.results <- result{id: id, set: set, res: res, err: err}:
 		case <-runCtx.Done(): // cancelled or controller stopped: nobody listens
 		}
 	}()
@@ -194,20 +226,61 @@ func (c *Controller) finish(r result) {
 		c.deps.UI.Notify("error: " + r.err.Error())
 	default:
 		c.last = r.res.Answer
+		c.history = append(c.history, r.res.Turn)
 		c.content = ui.Content{State: ui.Ready, Text: c.last, At: time.Now()}
 	}
-	c.answerPrompt, c.answerMode = r.prompt, r.mode
+	c.answer = r.set
 	c.publish()
 }
 
 // publish sends the content with the current settings, marking a finished
 // answer stale when it was made with other ones.
 func (c *Controller) publish() {
-	c.content.Prompt, c.content.Mode = c.active, c.mode
-	c.content.Provider, c.content.Model = c.provider, c.model
+	cur := c.current()
+	c.content.Prompt, c.content.Mode = cur.prompt, cur.mode
+	c.content.Provider, c.content.Model = cur.provider, cur.model
 	done := c.content.State == ui.Ready || c.content.State == ui.Failed
-	c.content.Stale = done && (c.answerPrompt != c.active || c.answerMode != c.mode)
+	c.content.Stale = done && c.answer != cur
+	c.content.Context = len(c.history)
+	if c.autoClear {
+		c.content.Context = 0 // the next capture starts fresh anyway
+	}
 	c.deps.UI.Update(c.content)
+}
+
+func (c *Controller) current() settings {
+	o := c.aiOpts[c.aiIdx]
+	return settings{prompt: c.active, mode: c.mode, provider: o.Provider, model: o.Model}
+}
+
+// cycleProvider switches to the next AI option that starts, skipping (and
+// reporting) ones that fail, e.g. for a missing API key. A running analysis
+// keeps its provider; the next capture uses the new one.
+func (c *Controller) cycleProvider() {
+	if len(c.aiOpts) < 2 {
+		c.deps.UI.Notify("only one provider configured (add ai.alternatives)")
+		return
+	}
+	for step := 1; step < len(c.aiOpts); step++ {
+		next := (c.aiIdx + step) % len(c.aiOpts)
+		o := c.aiOpts[next]
+		p, ok := c.aiBuilt[next]
+		if !ok {
+			var err error
+			if p, err = o.New(); err != nil {
+				c.deps.UI.Notify(fmt.Sprintf("skipping %s/%s: %v", o.Provider, o.Model, err))
+				continue
+			}
+			c.aiBuilt[next] = p
+		}
+		c.aiIdx = next
+		c.deps.Pipeline.AI = p
+		c.deps.Pipeline.OCR = nil // rebuilt with the new provider on next use
+		c.deps.UI.Notify("provider: " + o.Provider + "/" + o.Model)
+		c.publish()
+		return
+	}
+	c.deps.UI.Notify("no other provider could start")
 }
 
 // stop cancels the in-flight analysis, if any.

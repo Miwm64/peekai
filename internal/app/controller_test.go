@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"image"
 	"strings"
 	"testing"
@@ -63,20 +64,29 @@ type harness struct {
 }
 
 func start(t *testing.T, mutate func(*config.Config)) *harness {
+	return startWith(t, mutate, nil)
+}
+
+func startWith(t *testing.T, mutate func(*config.Config), deps func(*Deps)) *harness {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Prompts.List = map[string]string{"a": "A", "b": "B", "slow": "slow", "fail": "fail"}
 	cfg.Prompts.Active = "a"
+	cfg.AutoClear = true // most tests check one exchange; TestContext covers history
 	if mutate != nil {
 		mutate(&cfg)
 	}
 	h := &harness{t: t, actions: make(chan string), calls: make(chan string, 32), done: make(chan error, 1)}
-	c := New(cfg, Deps{
+	d := Deps{
 		Pipeline:  pipeline.Pipeline{Capturer: screen{}, AI: fakeAI{}},
-		NewOCR:    func() (pipeline.Recognizer, error) { return fakeOCR{}, nil },
+		NewOCR:    func(ai.Provider) (pipeline.Recognizer, error) { return fakeOCR{}, nil },
 		UI:        &recorder{calls: h.calls},
 		Clipboard: func(s string) error { h.copied = s; return nil },
-	})
+	}
+	if deps != nil {
+		deps(&d)
+	}
+	c := New(cfg, d)
 	go func() { h.done <- c.Run(context.Background(), h.actions) }()
 	h.expect("update no result yet · " + cfg.Prompts.Active + " · image | ")
 	t.Cleanup(func() {
@@ -262,4 +272,82 @@ func TestClearCancelsRun(t *testing.T) {
 		t.Fatalf("cancelled run still reported: %q", got)
 	case <-time.After(200 * time.Millisecond):
 	}
+}
+
+// prefixAI answers like fakeAI with a prefix, to tell providers apart.
+type prefixAI struct{ prefix string }
+
+func (p prefixAI) Analyze(ctx context.Context, req ai.Request) (string, error) {
+	a, err := fakeAI{}.Analyze(ctx, req)
+	return p.prefix + a, err
+}
+
+func TestCycleProvider(t *testing.T) {
+	h := startWith(t, nil, func(d *Deps) {
+		d.AI = []AIOption{
+			{Provider: "ollama", Model: "qwen2.5vl:7b", New: func() (ai.Provider, error) { return fakeAI{}, nil }},
+			{Provider: "grok", Model: "g1", New: func() (ai.Provider, error) { return prefixAI{"G:"}, nil }},
+			{Provider: "routerai", Model: "r1", New: func() (ai.Provider, error) { return nil, errors.New("no key") }},
+		}
+	})
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
+
+	h.send(ActCycleProv)
+	h.expect("notify provider: grok/g1", "update previous answer · a · image · grok/g1 | A/image")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image · grok/g1 | A/image")
+	select {
+	case got := <-h.calls:
+		if got != "update ✓ answer · a · image · grok/g1 · "+time.Now().Format("15:04")+" | G:A/image" {
+			t.Fatalf("got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no answer from grok")
+	}
+
+	h.send(ActCycleProv) // routerai can't start: skipped, back to ollama
+	h.expect("notify skipping routerai/r1: no key", "notify provider: ollama/qwen2.5vl:7b",
+		"update previous answer · a · image | G:A/image")
+}
+
+func TestCycleProviderWithOnlyOne(t *testing.T) {
+	h := start(t, nil)
+	h.send(ActCycleProv)
+	h.expect("notify only one provider configured (add ai.alternatives)")
+}
+
+// historyAI answers with how many earlier exchanges it was sent.
+type historyAI struct{}
+
+func (historyAI) Analyze(_ context.Context, req ai.Request) (string, error) {
+	return fmt.Sprintf("seen %d", len(req.History)), nil
+}
+
+func TestContext(t *testing.T) {
+	h := startWith(t, func(c *config.Config) { c.AutoClear = false }, func(d *Deps) {
+		d.Pipeline.AI = historyAI{}
+	})
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("seen 0")
+	h.send(ActCapture) // the first exchange is sent along
+	h.expect("update ● thinking… · a · image · ctx 1 | seen 0")
+	h.expectReady("seen 1")
+	h.send(ActClear) // forgets the context
+	h.expect("update no result yet · a · image | ", "notify cleared")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("seen 0")
+}
+
+func TestAutoClearKeepsWindowsButNotContext(t *testing.T) {
+	h := startWith(t, nil, func(d *Deps) { d.Pipeline.AI = historyAI{} })
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("seen 0")
+	h.send(ActCapture) // window keeps the previous answer; AI gets no history
+	h.expect("update ● thinking… · a · image | seen 0")
+	h.expectReady("seen 0")
 }
