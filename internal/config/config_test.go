@@ -78,7 +78,8 @@ func TestParseErrors(t *testing.T) {
 	}{
 		{"unknown field", `{"modee": "ocr"}`, `unknown field "modee"`},
 		{"bad mode", `{"mode": "video"}`, "mode:"},
-		{"bad output", `{"output": "toast"}`, "output:"},
+		{"removed output key", `{"output": "popup"}`, `unknown field "output"`},
+		{"removed capture_popup key", `{"hotkeys": {"capture_popup": "Ctrl+P"}}`, `unknown field "capture_popup"`},
 		{"bad duration", `{"ai": {"timeout": "soon"}}`, "invalid duration"},
 		{"duplicate hotkey", `{"hotkeys": {"quit": "ctrl+shift+s"}}`, "already used"},
 		{"empty hotkey", `{"hotkeys": {"quit": ""}}`, "hotkeys.quit: must not be empty"},
@@ -100,10 +101,10 @@ func TestParseErrors(t *testing.T) {
 func TestValidateReportsAllErrors(t *testing.T) {
 	cfg := Default()
 	cfg.Mode = "x"
-	cfg.Output = "y"
+	cfg.UI.Ticker.Position = "y"
 	err := cfg.Validate()
-	if err == nil || !strings.Contains(err.Error(), "mode:") || !strings.Contains(err.Error(), "output:") {
-		t.Errorf("want both mode and output errors, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "mode:") || !strings.Contains(err.Error(), "ui.ticker.position:") {
+		t.Errorf("want both mode and position errors, got %v", err)
 	}
 }
 

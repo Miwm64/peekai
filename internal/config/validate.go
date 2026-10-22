@@ -16,9 +16,6 @@ func (c Config) Validate() error {
 	if !slices.Contains([]string{ModeImage, ModeOCR}, c.Mode) {
 		add("mode: want %q or %q, got %q", ModeImage, ModeOCR, c.Mode)
 	}
-	if !slices.Contains([]string{OutputPopup, OutputTicker}, c.Output) {
-		add("output: want %q or %q, got %q", OutputPopup, OutputTicker, c.Output)
-	}
 
 	seen := map[string]string{}
 	for action, key := range c.Hotkeys.Bindings() {

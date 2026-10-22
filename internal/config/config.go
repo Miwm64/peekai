@@ -10,14 +10,10 @@ import (
 const (
 	ModeImage = "image"
 	ModeOCR   = "ocr"
-
-	OutputPopup  = "popup"
-	OutputTicker = "ticker"
 )
 
 type Config struct {
 	Mode    string  `json:"mode"`
-	Output  string  `json:"output"`
 	Hotkeys Hotkeys `json:"hotkeys"`
 	Capture Capture `json:"capture"`
 	OCR     OCR     `json:"ocr"`
@@ -27,31 +23,29 @@ type Config struct {
 }
 
 type Hotkeys struct {
-	Capture       string `json:"capture"`
-	CapturePopup  string `json:"capture_popup"`
-	CaptureTicker string `json:"capture_ticker"`
-	TogglePopup   string `json:"toggle_popup"`
-	ToggleTicker  string `json:"toggle_ticker"`
-	HideAll       string `json:"hide_all"`
-	CyclePrompt   string `json:"cycle_prompt"`
-	ToggleMode    string `json:"toggle_mode"`
-	CopyResult    string `json:"copy_result"`
-	Quit          string `json:"quit"`
+	// Capture takes a screenshot and asks the AI; it never opens a window.
+	Capture string `json:"capture"`
+	// TogglePopup / ToggleTicker are the only ways windows open or close.
+	TogglePopup  string `json:"toggle_popup"`
+	ToggleTicker string `json:"toggle_ticker"`
+	HideAll      string `json:"hide_all"`
+	CyclePrompt  string `json:"cycle_prompt"`
+	ToggleMode   string `json:"toggle_mode"`
+	CopyResult   string `json:"copy_result"`
+	Quit         string `json:"quit"`
 }
 
 // Bindings returns action name → shortcut for every hotkey.
 func (h Hotkeys) Bindings() map[string]string {
 	return map[string]string{
-		"capture":        h.Capture,
-		"capture_popup":  h.CapturePopup,
-		"capture_ticker": h.CaptureTicker,
-		"toggle_popup":   h.TogglePopup,
-		"toggle_ticker":  h.ToggleTicker,
-		"hide_all":       h.HideAll,
-		"cycle_prompt":   h.CyclePrompt,
-		"toggle_mode":    h.ToggleMode,
-		"copy_result":    h.CopyResult,
-		"quit":           h.Quit,
+		"capture":       h.Capture,
+		"toggle_popup":  h.TogglePopup,
+		"toggle_ticker": h.ToggleTicker,
+		"hide_all":      h.HideAll,
+		"cycle_prompt":  h.CyclePrompt,
+		"toggle_mode":   h.ToggleMode,
+		"copy_result":   h.CopyResult,
+		"quit":          h.Quit,
 	}
 }
 
@@ -87,6 +81,13 @@ type Prompts struct {
 type UI struct {
 	Ticker Ticker `json:"ticker"`
 	Popup  Popup  `json:"popup"`
+	Status Status `json:"status"`
+}
+
+// Status is the small pill showing "thinking…" and notices like
+// "mode: ocr" without a shortcut. Off by default.
+type Status struct {
+	Enabled bool `json:"enabled"`
 }
 
 type Ticker struct {
@@ -106,19 +107,16 @@ type Popup struct {
 // Default returns the config written on first run.
 func Default() Config {
 	return Config{
-		Mode:   ModeImage,
-		Output: OutputPopup,
+		Mode: ModeImage,
 		Hotkeys: Hotkeys{
-			Capture:       "Ctrl+Shift+S",
-			CapturePopup:  "Ctrl+Shift+P",
-			CaptureTicker: "Ctrl+Shift+T",
-			TogglePopup:   "Ctrl+Shift+1",
-			ToggleTicker:  "Ctrl+Shift+2",
-			HideAll:       "Ctrl+Shift+H",
-			CyclePrompt:   "Ctrl+Shift+N",
-			ToggleMode:    "Ctrl+Shift+M",
-			CopyResult:    "Ctrl+Shift+C",
-			Quit:          "Ctrl+Shift+Q",
+			Capture:      "Ctrl+Shift+S",
+			TogglePopup:  "Ctrl+Shift+1",
+			ToggleTicker: "Ctrl+Shift+2",
+			HideAll:      "Ctrl+Shift+H",
+			CyclePrompt:  "Ctrl+Shift+N",
+			ToggleMode:   "Ctrl+Shift+M",
+			CopyResult:   "Ctrl+Shift+C",
+			Quit:         "Ctrl+Shift+Q",
 		},
 		Capture: Capture{Display: "active"},
 		OCR:     OCR{Engine: "tesseract_cli", Lang: "eng"},
