@@ -25,6 +25,7 @@ const (
 	ActCyclePrompt  = "cycle_prompt"
 	ActToggleMode   = "toggle_mode"
 	ActCopyResult   = "copy_result"
+	ActClear        = "clear"
 	ActQuit         = "quit"
 )
 
@@ -128,6 +129,13 @@ func (c *Controller) handle(ctx context.Context, action string) {
 		c.refreshIdle()
 	case ActCopyResult:
 		c.copyLast()
+	case ActClear:
+		// Forget everything; open windows stay open and show the empty state.
+		c.stop()
+		c.last = ""
+		c.content = ui.Content{State: ui.Idle, Prompt: c.active, Mode: c.mode}
+		c.deps.UI.Update(c.content)
+		c.deps.UI.Notify("cleared")
 	default:
 		c.deps.UI.Notify("unknown action: " + action)
 	}

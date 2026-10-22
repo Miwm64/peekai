@@ -218,3 +218,27 @@ func TestQuitStopsRun(t *testing.T) {
 	}
 	h.done <- nil // let Cleanup finish
 }
+
+func TestClear(t *testing.T) {
+	h := start(t, nil)
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
+	h.send(ActClear)
+	h.expect("update no result yet · a · image | ", "notify cleared")
+	h.send(ActCopyResult)
+	h.expect("notify nothing to copy yet")
+}
+
+func TestClearCancelsRun(t *testing.T) {
+	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
+	h.send(ActCapture)
+	h.expect("update ● thinking… · slow · image | ")
+	h.send(ActClear)
+	h.expect("update no result yet · slow · image | ", "notify cleared")
+	select {
+	case got := <-h.calls:
+		t.Fatalf("cancelled run still reported: %q", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}

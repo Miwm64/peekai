@@ -32,7 +32,9 @@ type Hotkeys struct {
 	CyclePrompt  string `json:"cycle_prompt"`
 	ToggleMode   string `json:"toggle_mode"`
 	CopyResult   string `json:"copy_result"`
-	Quit         string `json:"quit"`
+	// Clear forgets the last answer and cancels a running analysis.
+	Clear string `json:"clear"`
+	Quit  string `json:"quit"`
 }
 
 // Bindings returns action name → shortcut for every hotkey.
@@ -45,6 +47,7 @@ func (h Hotkeys) Bindings() map[string]string {
 		"cycle_prompt":  h.CyclePrompt,
 		"toggle_mode":   h.ToggleMode,
 		"copy_result":   h.CopyResult,
+		"clear":         h.Clear,
 		"quit":          h.Quit,
 	}
 }
@@ -116,6 +119,7 @@ func Default() Config {
 			CyclePrompt:  "Ctrl+Shift+N",
 			ToggleMode:   "Ctrl+Shift+M",
 			CopyResult:   "Ctrl+Shift+C",
+			Clear:        "Ctrl+Shift+X",
 			Quit:         "Ctrl+Shift+Q",
 		},
 		Capture: Capture{Display: "active"},
