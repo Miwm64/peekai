@@ -72,7 +72,7 @@ type OCR struct {
 }
 
 type AI struct {
-	// Provider is a preset ("ollama", "routerai", "grok", "openrouter") or "openai_compat"
+	// Provider is a preset ("ollama", "routerai", "grok", "openrouter", "requesty") or "openai_compat"
 	// for any other OpenAI-compatible server.
 	Provider string `json:"provider"`
 	// BaseURL and APIKeyEnv override the preset; empty means use its default.
