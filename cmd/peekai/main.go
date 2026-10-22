@@ -25,20 +25,18 @@ import (
 	"github.com/Miwm64/peekai/internal/hotkey"
 	"github.com/Miwm64/peekai/internal/ocr"
 	"github.com/Miwm64/peekai/internal/pipeline"
+	"github.com/Miwm64/peekai/internal/ui"
 	"github.com/Miwm64/peekai/internal/ui/console"
+	"github.com/Miwm64/peekai/internal/ui/overlay"
 )
 
 var version = "dev"
 
 func main() {
-	// Global hotkeys need the OS main thread (macOS event loop); run the app
-	// on a goroutine while mainthread owns it.
-	mainthread.Init(func() {
-		if err := run(); err != nil {
-			fmt.Fprintln(os.Stderr, "peekai:", err)
-			os.Exit(1)
-		}
-	})
+	if err := run(); err != nil {
+		fmt.Fprintln(os.Stderr, "peekai:", err)
+		os.Exit(1)
+	}
 }
 
 func run() error {
@@ -48,6 +46,7 @@ func run() error {
 	mode := flag.String("mode", "", "override config mode: image | ocr")
 	promptName := flag.String("prompt", "", "override the active prompt (name from prompts.list)")
 	out := flag.String("out", "", "with -once: also save the screenshot sent to this PNG file")
+	useConsole := flag.Bool("console", false, "print results in the terminal instead of on-screen windows")
 	flag.Parse()
 
 	if *showVersion {
@@ -79,8 +78,8 @@ func run() error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	fmt.Printf("config: %s (mode=%s, output=%s, provider=%s, model=%s)\n",
-		path, cfg.Mode, cfg.Output, cfg.AI.Provider, cfg.AI.Model)
+	fmt.Printf("config: %s (mode=%s, provider=%s, model=%s)\n",
+		path, cfg.Mode, cfg.AI.Provider, cfg.AI.Model)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
@@ -88,11 +87,23 @@ func run() error {
 	if *once {
 		return runOnce(ctx, cfg, *out)
 	}
-	err = runHotkeys(ctx, cfg)
-	if errors.Is(err, context.Canceled) {
-		return nil // Ctrl+C
+
+	listen := func(presenter ui.Presenter) error {
+		err := runHotkeys(ctx, cfg, presenter)
+		if errors.Is(err, context.Canceled) {
+			return nil // Ctrl+C
+		}
+		return err
 	}
-	return err
+	// Global hotkeys and windows both need the OS main thread (the macOS
+	// event loop), so the UI owns it and the app runs alongside.
+	if *useConsole {
+		mainthread.Init(func() { err = listen(console.New(os.Stdout)) })
+		return err
+	}
+	ov := overlay.New(cfg.UI)
+	ov.Run(func() error { return listen(ov) }) // exits the process when done
+	return nil
 }
 
 // build creates the pipeline and the AI provider it uses.
@@ -109,10 +120,16 @@ func build(cfg config.Config) (pipeline.Pipeline, ai.Provider, error) {
 }
 
 // runHotkeys keeps running and reacts to the global hotkeys.
-func runHotkeys(ctx context.Context, cfg config.Config) error {
+func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter) error {
 	p, provider, err := build(cfg)
 	if err != nil {
 		return err
+	}
+	// Keep our own windows out of the screenshots.
+	if g, ok := presenter.(interface {
+		GuardCapture(capture.Capturer) capture.Capturer
+	}); ok {
+		p.Capturer = g.GuardCapture(p.Capturer)
 	}
 	listener, err := hotkey.Listen(cfg.Hotkeys.Bindings())
 	if err != nil {
@@ -120,10 +137,22 @@ func runHotkeys(ctx context.Context, cfg config.Config) error {
 	}
 	defer listener.Close()
 
+	// The first option is the provider already built above; alternatives
+	// are built on first switch.
+	var options []app.AIOption
+	for i, o := range cfg.AI.Options() {
+		newProvider := func() (ai.Provider, error) { return ai.New(o) }
+		if i == 0 {
+			newProvider = func() (ai.Provider, error) { return provider, nil }
+		}
+		options = append(options, app.AIOption{Provider: o.Provider, Model: o.Model, New: newProvider})
+	}
+
 	c := app.New(cfg, app.Deps{
 		Pipeline:  p,
-		NewOCR:    func() (pipeline.Recognizer, error) { return ocr.New(cfg.OCR, provider) },
-		UI:        console.New(os.Stdout),
+		AI:        options,
+		NewOCR:    func(current ai.Provider) (pipeline.Recognizer, error) { return ocr.New(cfg.OCR, current) },
+		UI:        presenter,
 		Clipboard: clipboard.WriteAll,
 	})
 

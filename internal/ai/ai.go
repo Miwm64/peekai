@@ -12,6 +12,21 @@ type Request struct {
 	Prompt string
 	Text   string      // OCR text of the screen
 	Image  image.Image // the screenshot
+	// History is the earlier conversation, oldest first, sent before this
+	// request so the model can refer back to it.
+	History []Turn
+}
+
+// Turn is one earlier exchange. Only text is kept: resending old
+// screenshots would make every request carry all of them.
+type Turn struct {
+	User      string
+	Assistant string
+}
+
+// Turn returns this request as a history entry with the given answer.
+func (r Request) Turn(answer string) Turn {
+	return Turn{User: userText(r), Assistant: answer}
 }
 
 // Provider returns the model's answer for a request.

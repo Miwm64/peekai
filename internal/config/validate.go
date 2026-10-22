@@ -16,9 +16,6 @@ func (c Config) Validate() error {
 	if !slices.Contains([]string{ModeImage, ModeOCR}, c.Mode) {
 		add("mode: want %q or %q, got %q", ModeImage, ModeOCR, c.Mode)
 	}
-	if !slices.Contains([]string{OutputPopup, OutputTicker}, c.Output) {
-		add("output: want %q or %q, got %q", OutputPopup, OutputTicker, c.Output)
-	}
 
 	seen := map[string]string{}
 	for action, key := range c.Hotkeys.Bindings() {
@@ -49,6 +46,11 @@ func (c Config) Validate() error {
 	if c.AI.Model == "" {
 		add("ai.model: must not be empty")
 	}
+	for i, alt := range c.AI.Alternatives {
+		if alt.Provider == "" || alt.Model == "" {
+			add("ai.alternatives[%d]: provider and model are required", i)
+		}
+	}
 	if c.AI.Timeout <= 0 {
 		add("ai.timeout: must be positive")
 	}
@@ -68,6 +70,9 @@ func (c Config) Validate() error {
 	}
 	if t.Position != "bottom" && t.Position != "top" {
 		add("ui.ticker.position: want \"bottom\" or \"top\", got %q", t.Position)
+	}
+	if t.Start != "right" && t.Start != "left" {
+		add("ui.ticker.start: want \"right\" or \"left\", got %q", t.Start)
 	}
 	p := c.UI.Popup
 	if p.Width <= 0 || p.MaxHeight <= 0 {

@@ -24,6 +24,9 @@ var presets = map[string]preset{
 	"ollama":        {baseURL: "http://localhost:11434/v1"},
 	"routerai":      {baseURL: "https://routerai.ru/api/v1", keyEnv: "ROUTERAI_API_KEY"},
 	"grok":          {baseURL: "https://api.x.ai/v1", keyEnv: "XAI_API_KEY"},
+	"openrouter":    {baseURL: "https://openrouter.ai/api/v1", keyEnv: "OPENROUTER_API_KEY"},
+	"requesty":      {baseURL: "https://router.requesty.ai/v1", keyEnv: "REQUESTY_API_KEY"},
+	"gemini":        {baseURL: "https://generativelanguage.googleapis.com/v1beta/openai", keyEnv: "GEMINI_API_KEY"},
 	"openai_compat": {}, // generic: base_url from config, key optional
 }
 
@@ -48,7 +51,9 @@ func New(cfg config.AI) (Provider, error) {
 	keyEnv := cmp.Or(cfg.APIKeyEnv, p.keyEnv)
 	var key string
 	if keyEnv != "" {
-		key = os.Getenv(keyEnv)
+		// Copy-pasted keys often carry spaces or quotes; providers then
+		// reject them with confusing messages.
+		key = strings.Trim(strings.TrimSpace(os.Getenv(keyEnv)), `"'`)
 		// Presets with a key env need it; a generic server may run keyless.
 		if key == "" && p.keyEnv != "" {
 			return nil, fmt.Errorf("%s: set the API key in the %s environment variable", cfg.Provider, keyEnv)
@@ -60,6 +65,7 @@ func New(cfg config.AI) (Provider, error) {
 		baseURL: strings.TrimRight(baseURL, "/"),
 		model:   cfg.Model,
 		apiKey:  key,
+		keyEnv:  keyEnv,
 		client:  &http.Client{Timeout: time.Duration(cfg.Timeout)},
 	}, nil
 }

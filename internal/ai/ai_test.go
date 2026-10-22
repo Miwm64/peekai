@@ -152,6 +152,33 @@ func TestPresetDefaults(t *testing.T) {
 	if got := p.(*openAI).baseURL; got != "https://api.x.ai/v1" {
 		t.Errorf("grok baseURL = %s", got)
 	}
+
+	t.Setenv("OPENROUTER_API_KEY", "k")
+	p, err = New(cfgFor("openrouter", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*openAI).baseURL; got != "https://openrouter.ai/api/v1" {
+		t.Errorf("openrouter baseURL = %s", got)
+	}
+
+	t.Setenv("REQUESTY_API_KEY", "k")
+	p, err = New(cfgFor("requesty", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*openAI).baseURL; got != "https://router.requesty.ai/v1" {
+		t.Errorf("requesty baseURL = %s", got)
+	}
+
+	t.Setenv("GEMINI_API_KEY", "k")
+	p, err = New(cfgFor("gemini", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*openAI).baseURL; got != "https://generativelanguage.googleapis.com/v1beta/openai" {
+		t.Errorf("gemini baseURL = %s", got)
+	}
 }
 
 func TestCancel(t *testing.T) {
@@ -186,5 +213,43 @@ func TestNoVisionHint(t *testing.T) {
 	_, err = p.Analyze(context.Background(), Request{Prompt: "x", Text: "words"})
 	if err == nil || strings.Contains(err.Error(), "can't read images") {
 		t.Errorf("text request got vision hint: %v", err)
+	}
+}
+
+func TestHistoryIsSentAsMessages(t *testing.T) {
+	srv, _, body := fakeServer(t, http.StatusOK, okBody)
+	p, err := New(cfgFor("ollama", srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Prompt: "And now?", History: []Turn{{User: "Explain", Assistant: "It is a chart."}}}
+	if _, err := p.Analyze(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var roles []string
+	for _, m := range body.Messages {
+		roles = append(roles, m.Role)
+	}
+	if strings.Join(roles, ",") != "user,assistant,user" {
+		t.Fatalf("roles = %v", roles)
+	}
+	if body.Messages[1].Content != "It is a chart." || body.Messages[2].Content != "And now?" {
+		t.Errorf("messages = %+v", body.Messages)
+	}
+}
+
+func TestKeyIsTrimmedAndAuthErrorNamesEnv(t *testing.T) {
+	t.Setenv("OPENROUTER_API_KEY", "  'sk-or-123'\n")
+	srv, req, _ := fakeServer(t, http.StatusUnauthorized, `{"error":{"message":"Missing Authentication header","code":401}}`)
+	p, err := New(cfgFor("openrouter", srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = p.Analyze(context.Background(), Request{Prompt: "x"})
+	if h := req.Header.Get("Authorization"); h != "Bearer sk-or-123" {
+		t.Errorf("Authorization = %q", h)
+	}
+	if err == nil || !strings.Contains(err.Error(), "check the key in OPENROUTER_API_KEY") {
+		t.Errorf("err = %v", err)
 	}
 }

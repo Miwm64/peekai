@@ -82,24 +82,21 @@ Done when: `peekai --once` prints an answer from a local Ollama.
 Done when: hotkeys run the pipeline and print results in the terminal (console presenter; real windows in 8–9).
 Esc is not a global hotkey on purpose (it would steal Esc from every app); `hide_all` cancels a running request.
 
-## 7. UI spike — `spike/ui-on-top`
-- `feat(ui): add Presenter interface`
-- `feat(ui): open frameless always-on-top window with go-gui`
-- `feat(ui): add per-OS on-top/click-through shim` *(only if go-gui lacks it)*
+## 7–9. Overlay UI — `feat/ui`
+Spike result: go-gui draws the windows (frameless, transparent, text, animation) but has no
+always-on-top, positioning, click-through or native handle, and its `Show()` activates the app
+(switches Spaces away from fullscreen apps). `internal/ui/ontop` fills the gap per OS, finding our
+windows by title: macOS (Cocoa: status level, all Spaces incl. other apps' fullscreen, accessory app,
+show without activating), Windows (Win32 topmost/tool/no-activate/click-through), X11 (EWMH above/sticky,
+XFixes input shape; go-gui forced to X11).
 
-Decision point: if go-gui can't do on-top/transparent windows cleanly, switch the impl to another library (e.g. Gio). Only `internal/ui/*` changes.
+- `feat(capture): capture the display under the mouse`
+- `feat(ui): add on-top add-on for macOS, Windows and X11`
+- `feat(ui): add go-gui overlay with popup, running line and status`
+- `feat(app): show results in the overlay, add -console flag`
 
-## 8. Popup — `feat/popup`
-- `feat(popup): show result near cursor with scrollable text`
-- `feat(popup): close on Esc / toggle hotkey, optional autohide`
-- `feat(app): wire capture_popup and toggle_popup`
-- `feat(app): copy last result to clipboard`
-
-## 9. Ticker — `feat/ticker`
-- `feat(ticker): full-width bottom strip with looping scroll`
-- `feat(ticker): no focus steal, click-through where supported`
-- `feat(ticker): busy indicator while AI is running`
-- `feat(app): wire capture_ticker and toggle_ticker`
+Done when: popup and running line appear only on their hotkeys, over the current app (also fullscreen)
+on the display under the mouse, without stealing focus. Verified on macOS; Windows/X11 compile-checked only.
 
 ## 10. Tray & reload — `feat/tray`
 - `feat(tray): tray icon with Reload config and Quit`

@@ -18,10 +18,14 @@ import (
 // recorder is a ui.Presenter that reports every call on a channel.
 type recorder struct{ calls chan string }
 
-func (r *recorder) Show(v ui.View, text string) { r.calls <- fmt.Sprintf("show %s: %s", v, text) }
-func (r *recorder) Hide(v ui.View)              { r.calls <- "hide " + v.String() }
-func (r *recorder) Busy(on bool)                { r.calls <- fmt.Sprint("busy ", on) }
-func (r *recorder) Notify(msg string)           { r.calls <- "notify " + msg }
+// Update drops the provider/model part of the header to keep expectations
+// short; TestHeaderShowsProviderAndModel checks it.
+func (r *recorder) Update(c ui.Content) {
+	r.calls <- "update " + strings.Replace(c.Header(), " · ollama/qwen2.5vl:7b", "", 1) + " | " + c.Text
+}
+func (r *recorder) Show(v ui.View)    { r.calls <- "show " + v.String() }
+func (r *recorder) Hide(v ui.View)    { r.calls <- "hide " + v.String() }
+func (r *recorder) Notify(msg string) { r.calls <- "notify " + msg }
 
 type screen struct{}
 
@@ -60,21 +64,31 @@ type harness struct {
 }
 
 func start(t *testing.T, mutate func(*config.Config)) *harness {
+	return startWith(t, mutate, nil)
+}
+
+func startWith(t *testing.T, mutate func(*config.Config), deps func(*Deps)) *harness {
 	t.Helper()
 	cfg := config.Default()
 	cfg.Prompts.List = map[string]string{"a": "A", "b": "B", "slow": "slow", "fail": "fail"}
 	cfg.Prompts.Active = "a"
+	cfg.AutoClear = true // most tests check one exchange; TestContext covers history
 	if mutate != nil {
 		mutate(&cfg)
 	}
 	h := &harness{t: t, actions: make(chan string), calls: make(chan string, 32), done: make(chan error, 1)}
-	c := New(cfg, Deps{
+	d := Deps{
 		Pipeline:  pipeline.Pipeline{Capturer: screen{}, AI: fakeAI{}},
-		NewOCR:    func() (pipeline.Recognizer, error) { return fakeOCR{}, nil },
+		NewOCR:    func(ai.Provider) (pipeline.Recognizer, error) { return fakeOCR{}, nil },
 		UI:        &recorder{calls: h.calls},
 		Clipboard: func(s string) error { h.copied = s; return nil },
-	})
+	}
+	if deps != nil {
+		deps(&d)
+	}
+	c := New(cfg, d)
 	go func() { h.done <- c.Run(context.Background(), h.actions) }()
+	h.expect("update no result yet · " + cfg.Prompts.Active + " · image | ")
 	t.Cleanup(func() {
 		select {
 		case h.actions <- ActQuit:
@@ -102,28 +116,51 @@ func (h *harness) expect(want ...string) {
 	}
 }
 
-func TestCaptureShowsInDefaultView(t *testing.T) {
-	h := start(t, func(c *config.Config) { c.Output = config.OutputTicker })
-	h.send(ActCapture)
-	h.expect("busy true", "busy false", "show ticker: A/image")
+// ready matches the Update for a finished answer (its time varies).
+func (h *harness) expectReady(text string) {
+	h.t.Helper()
+	select {
+	case got := <-h.calls:
+		if !strings.HasPrefix(got, "update ✓ answer") || !strings.HasSuffix(got, "| "+text) {
+			h.t.Fatalf("ui call = %q, want ready %q", got, text)
+		}
+	case <-time.After(2 * time.Second):
+		h.t.Fatalf("timed out waiting for answer %q", text)
+	}
 }
 
-func TestCaptureToSpecificViewsAndToggle(t *testing.T) {
+func TestCaptureNeverOpensWindows(t *testing.T) {
 	h := start(t, nil)
-	h.send(ActCapturePopup)
-	h.expect("busy true", "busy false", "show popup: A/image")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
+	select {
+	case got := <-h.calls:
+		t.Fatalf("unexpected ui call after capture: %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestToggleOpensAndCloses(t *testing.T) {
+	h := start(t, nil)
+	h.send(ActTogglePopup) // opens even before any answer
+	h.expect("show popup")
+	h.send(ActCapture) // open window gets the new content
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
 	h.send(ActTogglePopup)
 	h.expect("hide popup")
 	h.send(ActToggleTicker)
-	h.expect("show ticker: A/image")
+	h.expect("show ticker")
 	h.send(ActHideAll)
 	h.expect("hide ticker")
+	h.send(ActHideAll) // nothing open: no calls
+	h.send(ActCopyResult)
+	h.expect("notify copied to clipboard")
 }
 
-func TestToggleBeforeAnyResult(t *testing.T) {
+func TestCopyBeforeAnyResult(t *testing.T) {
 	h := start(t, nil)
-	h.send(ActTogglePopup)
-	h.expect("notify nothing to show yet")
 	h.send(ActCopyResult)
 	h.expect("notify nothing to copy yet")
 }
@@ -131,57 +168,72 @@ func TestToggleBeforeAnyResult(t *testing.T) {
 func TestCyclePromptAndToggleMode(t *testing.T) {
 	h := start(t, nil)
 	h.send(ActCyclePrompt)
-	h.expect("notify prompt: b")
+	h.expect("notify prompt: b", "update no result yet · b · image | ")
 	h.send(ActToggleMode)
-	h.expect("notify mode: ocr")
-	h.send(ActCapturePopup)
-	h.expect("busy true", "busy false", "show popup: B/text:words")
+	h.expect("notify mode: ocr", "update no result yet · b · ocr | ")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · b · ocr | ")
+	h.expectReady("B/text:words")
+	h.send(ActCyclePrompt) // after an answer: title updates, answer kept as previous
+	h.expect("notify prompt: fail", "update previous answer · fail · ocr | B/text:words")
+	h.send(ActCyclePrompt)
+	h.expect("notify prompt: slow", "update previous answer · slow · ocr | B/text:words")
+	h.send(ActCyclePrompt) // back to the answer's own settings: no longer stale
+	h.send(ActToggleMode)
+	h.expect("notify prompt: a", "update previous answer · a · ocr | B/text:words",
+		"notify mode: image", "update previous answer · a · image | B/text:words")
 }
 
-func TestHideAllCancelsRun(t *testing.T) {
-	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
-	h.send(ActCapture)
-	h.expect("busy true")
-	h.send(ActHideAll)
-	h.expect("busy false")
-	// The cancelled run must not show anything afterwards.
+func TestHeaderShowsProviderAndModel(t *testing.T) {
+	c := ui.Content{State: ui.Ready, Text: "x", Prompt: "explain", Mode: "image", Provider: "routerai", Model: "gpt-x"}
+	if h := c.Header(); !strings.Contains(h, "explain · image · routerai/gpt-x") {
+		t.Errorf("header = %q", h)
+	}
+	c.Stale = true
+	if h, b := c.Header(), c.Body(); !strings.HasPrefix(h, "previous answer") || b != "(previous answer)\nx" {
+		t.Errorf("stale header/body = %q / %q", h, b)
+	}
+}
+
+func TestHideAllKeepsRunning(t *testing.T) {
+	h := start(t, nil)
 	h.send(ActTogglePopup)
-	h.expect("notify nothing to show yet")
+	h.expect("show popup")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.send(ActHideAll)
+	// Order of hide vs. answer depends on timing; both must arrive.
+	got := map[string]bool{}
+	for range 2 {
+		select {
+		case c := <-h.calls:
+			got[strings.SplitN(c, " ·", 2)[0]] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out, got %v", got)
+		}
+	}
+	if !got["hide popup"] || !got["update ✓ answer"] {
+		t.Errorf("calls = %v", got)
+	}
 }
 
 func TestRetriggerReplacesRun(t *testing.T) {
 	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
 	h.send(ActCapture)
-	h.expect("busy true")
-	h.send(ActCyclePrompt) // slow → a (sorted: a, b, fail, slow)
-	h.expect("notify prompt: a")
+	h.expect("update ● thinking… · slow · image | ")
+	h.send(ActCyclePrompt) // slow → a (sorted: a, b, fail, slow); title updates at once
+	h.expect("notify prompt: a", "update ● thinking… · a · image | ")
 	h.send(ActCapture)
-	h.expect("busy false", "busy true", "busy false", "show popup: A/image")
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
 }
 
-func TestErrorIsNotified(t *testing.T) {
+func TestErrorIsShownAsContent(t *testing.T) {
 	h := start(t, func(c *config.Config) { c.Prompts.Active = "fail" })
 	h.send(ActCapture)
-	h.expect("busy true", "busy false")
-	select {
-	case got := <-h.calls:
-		if !strings.HasPrefix(got, "notify error: ai: boom") {
-			t.Errorf("got %q", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no error notification")
-	}
-}
-
-func TestCopyResult(t *testing.T) {
-	h := start(t, nil)
-	h.send(ActCapture)
-	h.expect("busy true", "busy false", "show popup: A/image")
-	h.send(ActCopyResult)
-	h.expect("notify copied to clipboard")
-	if h.copied != "A/image" {
-		t.Errorf("copied %q", h.copied)
-	}
+	h.expect("update ● thinking… · fail · image | ",
+		"notify error: ai: boom",
+		"update ✕ failed · fail · image | ai: boom")
 }
 
 func TestQuitStopsRun(t *testing.T) {
@@ -196,4 +248,106 @@ func TestQuitStopsRun(t *testing.T) {
 		t.Fatal("Run did not return on quit")
 	}
 	h.done <- nil // let Cleanup finish
+}
+
+func TestClear(t *testing.T) {
+	h := start(t, nil)
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
+	h.send(ActClear)
+	h.expect("update no result yet · a · image | ", "notify cleared")
+	h.send(ActCopyResult)
+	h.expect("notify nothing to copy yet")
+}
+
+func TestClearCancelsRun(t *testing.T) {
+	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
+	h.send(ActCapture)
+	h.expect("update ● thinking… · slow · image | ")
+	h.send(ActClear)
+	h.expect("update no result yet · slow · image | ", "notify cleared")
+	select {
+	case got := <-h.calls:
+		t.Fatalf("cancelled run still reported: %q", got)
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// prefixAI answers like fakeAI with a prefix, to tell providers apart.
+type prefixAI struct{ prefix string }
+
+func (p prefixAI) Analyze(ctx context.Context, req ai.Request) (string, error) {
+	a, err := fakeAI{}.Analyze(ctx, req)
+	return p.prefix + a, err
+}
+
+func TestCycleProvider(t *testing.T) {
+	h := startWith(t, nil, func(d *Deps) {
+		d.AI = []AIOption{
+			{Provider: "ollama", Model: "qwen2.5vl:7b", New: func() (ai.Provider, error) { return fakeAI{}, nil }},
+			{Provider: "grok", Model: "g1", New: func() (ai.Provider, error) { return prefixAI{"G:"}, nil }},
+			{Provider: "routerai", Model: "r1", New: func() (ai.Provider, error) { return nil, errors.New("no key") }},
+		}
+	})
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
+
+	h.send(ActCycleProv)
+	h.expect("notify provider: grok/g1", "update previous answer · a · image · grok/g1 | A/image")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image · grok/g1 | A/image")
+	select {
+	case got := <-h.calls:
+		if got != "update ✓ answer · a · image · grok/g1 · "+time.Now().Format("15:04")+" | G:A/image" {
+			t.Fatalf("got %q", got)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("no answer from grok")
+	}
+
+	h.send(ActCycleProv) // routerai can't start: skipped, back to ollama
+	h.expect("notify skipping routerai/r1: no key", "notify provider: ollama/qwen2.5vl:7b",
+		"update previous answer · a · image | G:A/image")
+}
+
+func TestCycleProviderWithOnlyOne(t *testing.T) {
+	h := start(t, nil)
+	h.send(ActCycleProv)
+	h.expect("notify only one provider configured (add ai.alternatives)")
+}
+
+// historyAI answers with how many earlier exchanges it was sent.
+type historyAI struct{}
+
+func (historyAI) Analyze(_ context.Context, req ai.Request) (string, error) {
+	return fmt.Sprintf("seen %d", len(req.History)), nil
+}
+
+func TestContext(t *testing.T) {
+	h := startWith(t, func(c *config.Config) { c.AutoClear = false }, func(d *Deps) {
+		d.Pipeline.AI = historyAI{}
+	})
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("seen 0")
+	h.send(ActCapture) // the first exchange is sent along
+	h.expect("update ● thinking… · a · image · ctx 1 | seen 0")
+	h.expectReady("seen 1")
+	h.send(ActClear) // forgets the context
+	h.expect("update no result yet · a · image | ", "notify cleared")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("seen 0")
+}
+
+func TestAutoClearKeepsWindowsButNotContext(t *testing.T) {
+	h := startWith(t, nil, func(d *Deps) { d.Pipeline.AI = historyAI{} })
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("seen 0")
+	h.send(ActCapture) // window keeps the previous answer; AI gets no history
+	h.expect("update ● thinking… · a · image | seen 0")
+	h.expectReady("seen 0")
 }

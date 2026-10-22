@@ -30,7 +30,8 @@ func (s *screen) Capture(ctx context.Context) (image.Image, error) {
 	for i := range n {
 		bounds[i] = screenshot.GetDisplayBounds(i)
 	}
-	r, err := rectFor(s.display, bounds)
+	mouse, mouseOK := cursor()
+	r, err := rectFor(s.display, bounds, mouse, mouseOK)
 	if err != nil {
 		return nil, err
 	}

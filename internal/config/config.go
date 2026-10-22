@@ -10,47 +10,51 @@ import (
 const (
 	ModeImage = "image"
 	ModeOCR   = "ocr"
-
-	OutputPopup  = "popup"
-	OutputTicker = "ticker"
 )
 
 type Config struct {
-	Mode    string  `json:"mode"`
-	Output  string  `json:"output"`
-	Hotkeys Hotkeys `json:"hotkeys"`
-	Capture Capture `json:"capture"`
-	OCR     OCR     `json:"ocr"`
-	AI      AI      `json:"ai"`
-	Prompts Prompts `json:"prompts"`
-	UI      UI      `json:"ui"`
+	Mode string `json:"mode"`
+	// AutoClear starts a fresh AI conversation on every capture. When
+	// false, earlier prompts and answers are sent along as context until
+	// the clear shortcut. It never clears the windows.
+	AutoClear bool    `json:"auto_clear"`
+	Hotkeys   Hotkeys `json:"hotkeys"`
+	Capture   Capture `json:"capture"`
+	OCR       OCR     `json:"ocr"`
+	AI        AI      `json:"ai"`
+	Prompts   Prompts `json:"prompts"`
+	UI        UI      `json:"ui"`
 }
 
 type Hotkeys struct {
-	Capture       string `json:"capture"`
-	CapturePopup  string `json:"capture_popup"`
-	CaptureTicker string `json:"capture_ticker"`
-	TogglePopup   string `json:"toggle_popup"`
-	ToggleTicker  string `json:"toggle_ticker"`
-	HideAll       string `json:"hide_all"`
-	CyclePrompt   string `json:"cycle_prompt"`
+	// Capture takes a screenshot and asks the AI; it never opens a window.
+	Capture string `json:"capture"`
+	// TogglePopup / ToggleTicker are the only ways windows open or close.
+	TogglePopup  string `json:"toggle_popup"`
+	ToggleTicker string `json:"toggle_ticker"`
+	HideAll      string `json:"hide_all"`
+	CyclePrompt  string `json:"cycle_prompt"`
+	// CycleProvider switches between ai and ai.alternatives.
+	CycleProvider string `json:"cycle_provider"`
 	ToggleMode    string `json:"toggle_mode"`
 	CopyResult    string `json:"copy_result"`
-	Quit          string `json:"quit"`
+	// Clear forgets the last answer and cancels a running analysis.
+	Clear string `json:"clear"`
+	Quit  string `json:"quit"`
 }
 
 // Bindings returns action name → shortcut for every hotkey.
 func (h Hotkeys) Bindings() map[string]string {
 	return map[string]string{
 		"capture":        h.Capture,
-		"capture_popup":  h.CapturePopup,
-		"capture_ticker": h.CaptureTicker,
 		"toggle_popup":   h.TogglePopup,
 		"toggle_ticker":  h.ToggleTicker,
 		"hide_all":       h.HideAll,
 		"cycle_prompt":   h.CyclePrompt,
+		"cycle_provider": h.CycleProvider,
 		"toggle_mode":    h.ToggleMode,
 		"copy_result":    h.CopyResult,
+		"clear":          h.Clear,
 		"quit":           h.Quit,
 	}
 }
@@ -68,8 +72,9 @@ type OCR struct {
 }
 
 type AI struct {
-	// Provider is a preset ("ollama", "routerai", "grok") or "openai_compat"
-	// for any other OpenAI-compatible server.
+	// Provider is a preset ("ollama", "routerai", "grok", "openrouter",
+	// "requesty", "gemini") or "openai_compat" for any other
+	// OpenAI-compatible server.
 	Provider string `json:"provider"`
 	// BaseURL and APIKeyEnv override the preset; empty means use its default.
 	BaseURL    string   `json:"base_url"`
@@ -77,6 +82,31 @@ type AI struct {
 	APIKeyEnv  string   `json:"api_key_env"`
 	Timeout    Duration `json:"timeout"`
 	MaxImagePx int      `json:"max_image_px"`
+	// Alternatives are more providers to switch to with cycle_provider.
+	// Timeout and MaxImagePx are shared.
+	Alternatives []AIAlternative `json:"alternatives"`
+}
+
+// AIAlternative is another provider/model; empty fields work as in AI.
+type AIAlternative struct {
+	Provider  string `json:"provider"`
+	BaseURL   string `json:"base_url,omitempty"`
+	Model     string `json:"model"`
+	APIKeyEnv string `json:"api_key_env,omitempty"`
+}
+
+// Options returns the main provider followed by the alternatives, each as
+// a complete AI config.
+func (a AI) Options() []AI {
+	opts := []AI{a}
+	for _, alt := range a.Alternatives {
+		o := a
+		o.Provider, o.BaseURL, o.Model, o.APIKeyEnv = alt.Provider, alt.BaseURL, alt.Model, alt.APIKeyEnv
+		o.Alternatives = nil
+		opts = append(opts, o)
+	}
+	opts[0].Alternatives = nil
+	return opts
 }
 
 type Prompts struct {
@@ -87,6 +117,13 @@ type Prompts struct {
 type UI struct {
 	Ticker Ticker `json:"ticker"`
 	Popup  Popup  `json:"popup"`
+	Status Status `json:"status"`
+}
+
+// Status is the small pill showing "thinking…" and notices like
+// "mode: ocr" without a shortcut. Off by default.
+type Status struct {
+	Enabled bool `json:"enabled"`
 }
 
 type Ticker struct {
@@ -94,6 +131,9 @@ type Ticker struct {
 	Height   int     `json:"height"`
 	Opacity  float64 `json:"opacity"`
 	Position string  `json:"position"` // "bottom" | "top"
+	// Start is where the text begins: "right" enters at the right edge,
+	// "left" starts already visible at the left. It then moves left.
+	Start string `json:"start"`
 }
 
 type Popup struct {
@@ -106,18 +146,17 @@ type Popup struct {
 // Default returns the config written on first run.
 func Default() Config {
 	return Config{
-		Mode:   ModeImage,
-		Output: OutputPopup,
+		Mode: ModeImage,
 		Hotkeys: Hotkeys{
 			Capture:       "Ctrl+Shift+S",
-			CapturePopup:  "Ctrl+Shift+P",
-			CaptureTicker: "Ctrl+Shift+T",
 			TogglePopup:   "Ctrl+Shift+1",
 			ToggleTicker:  "Ctrl+Shift+2",
 			HideAll:       "Ctrl+Shift+H",
 			CyclePrompt:   "Ctrl+Shift+N",
+			CycleProvider: "Ctrl+Shift+P",
 			ToggleMode:    "Ctrl+Shift+M",
 			CopyResult:    "Ctrl+Shift+C",
+			Clear:         "Ctrl+Shift+X",
 			Quit:          "Ctrl+Shift+Q",
 		},
 		Capture: Capture{Display: "active"},
@@ -137,7 +176,7 @@ func Default() Config {
 			},
 		},
 		UI: UI{
-			Ticker: Ticker{Speed: 120, Height: 36, Opacity: 0.85, Position: "bottom"},
+			Ticker: Ticker{Speed: 120, Height: 44, Opacity: 0.85, Position: "bottom", Start: "right"},
 			Popup:  Popup{Width: 520, MaxHeight: 600, Opacity: 0.95},
 		},
 	}

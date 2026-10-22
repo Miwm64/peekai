@@ -16,6 +16,7 @@ type openAI struct {
 	baseURL string
 	model   string
 	apiKey  string
+	keyEnv  string // where apiKey came from, for error hints
 	client  *http.Client
 }
 
@@ -60,7 +61,15 @@ func (p *openAI) Analyze(ctx context.Context, req Request) (string, error) {
 		}
 	}
 
-	body, err := json.Marshal(chatRequest{Model: p.model, Messages: []chatMessage{msg}})
+	msgs := make([]chatMessage, 0, 2*len(req.History)+1)
+	for _, t := range req.History {
+		msgs = append(msgs,
+			chatMessage{Role: "user", Content: t.User},
+			chatMessage{Role: "assistant", Content: t.Assistant})
+	}
+	msgs = append(msgs, msg)
+
+	body, err := json.Marshal(chatRequest{Model: p.model, Messages: msgs})
 	if err != nil {
 		return "", err
 	}
@@ -87,6 +96,9 @@ func (p *openAI) Analyze(ctx context.Context, req Request) (string, error) {
 		msg := apiError(data)
 		if req.Image != nil && looksLikeNoVision(msg) {
 			msg += fmt.Sprintf(" (model %q can't read images: use a vision model or -mode ocr)", p.model)
+		}
+		if (resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden) && p.keyEnv != "" {
+			msg += fmt.Sprintf(" (check the key in %s)", p.keyEnv)
 		}
 		return "", fmt.Errorf("%s: %s: %s", p.name, resp.Status, msg)
 	}
