@@ -60,7 +60,15 @@ func (p *openAI) Analyze(ctx context.Context, req Request) (string, error) {
 		}
 	}
 
-	body, err := json.Marshal(chatRequest{Model: p.model, Messages: []chatMessage{msg}})
+	msgs := make([]chatMessage, 0, 2*len(req.History)+1)
+	for _, t := range req.History {
+		msgs = append(msgs,
+			chatMessage{Role: "user", Content: t.User},
+			chatMessage{Role: "assistant", Content: t.Assistant})
+	}
+	msgs = append(msgs, msg)
+
+	body, err := json.Marshal(chatRequest{Model: p.model, Messages: msgs})
 	if err != nil {
 		return "", err
 	}

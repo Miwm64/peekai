@@ -28,13 +28,15 @@ type Pipeline struct {
 
 // Options are the per-run choices the user can switch with hotkeys.
 type Options struct {
-	Mode   string // config.ModeImage or config.ModeOCR
-	Prompt string // prompt template
+	Mode    string    // config.ModeImage or config.ModeOCR
+	Prompt  string    // prompt template
+	History []ai.Turn // earlier conversation to send along
 }
 
 // Result is what one run produced.
 type Result struct {
 	Answer  string
+	Turn    ai.Turn // this exchange, to append to the history
 	Mode    string
 	Image   image.Image // the (downscaled) screenshot
 	Text    string      // OCR text, ocr mode only
@@ -78,10 +80,12 @@ func (p *Pipeline) Run(ctx context.Context, opts Options) (Result, error) {
 	if usesText {
 		req.Text = ""
 	}
+	req.History = opts.History
 
 	if res.Answer, err = p.AI.Analyze(ctx, req); err != nil {
 		return res, fmt.Errorf("ai: %w", err)
 	}
+	res.Turn = req.Turn(res.Answer)
 	res.Elapsed = time.Since(start)
 	return res, nil
 }

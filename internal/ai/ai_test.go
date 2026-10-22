@@ -188,3 +188,25 @@ func TestNoVisionHint(t *testing.T) {
 		t.Errorf("text request got vision hint: %v", err)
 	}
 }
+
+func TestHistoryIsSentAsMessages(t *testing.T) {
+	srv, _, body := fakeServer(t, http.StatusOK, okBody)
+	p, err := New(cfgFor("ollama", srv.URL))
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := Request{Prompt: "And now?", History: []Turn{{User: "Explain", Assistant: "It is a chart."}}}
+	if _, err := p.Analyze(context.Background(), req); err != nil {
+		t.Fatal(err)
+	}
+	var roles []string
+	for _, m := range body.Messages {
+		roles = append(roles, m.Role)
+	}
+	if strings.Join(roles, ",") != "user,assistant,user" {
+		t.Fatalf("roles = %v", roles)
+	}
+	if body.Messages[1].Content != "It is a chart." || body.Messages[2].Content != "And now?" {
+		t.Errorf("messages = %+v", body.Messages)
+	}
+}
