@@ -1,6 +1,7 @@
 // Package overlay is the on-screen ui.Presenter: a popup, a running line
-// and a small status pill, drawn with go-gui and kept above other apps
-// (also fullscreen ones) by ui/ontop. All windows start hidden.
+// and an optional status pill, drawn with go-gui and kept above other apps
+// (also fullscreen ones) by ui/ontop. Windows start hidden and open only
+// through Show; Update changes what they display.
 package overlay
 
 import (
@@ -35,8 +36,11 @@ const (
 
 var (
 	fg       = gui.RGB(238, 238, 242)
+	dim      = gui.RGB(160, 160, 170)
 	textSize = float32(16)
 )
+
+type popupState struct{ content ui.Content }
 
 type textState struct{ text string }
 
@@ -57,17 +61,17 @@ type Overlay struct {
 	status *gui.Window
 
 	mu        sync.Mutex
+	content   ui.Content
+	visible   map[ui.View]bool
 	stopTick  chan struct{} // closes to stop the running line animation
-	busy      bool
 	noticeGen int
-	popupGen  int
 }
 
 var _ ui.Presenter = (*Overlay)(nil)
 
 func New(cfg config.UI) *Overlay {
-	o := &Overlay{cfg: cfg, app: gui.NewApp()}
-	o.popup = newWindow(popupTitle, cfg.Popup.Width, cfg.Popup.MaxHeight, &textState{}, o.popupView)
+	o := &Overlay{cfg: cfg, app: gui.NewApp(), visible: map[ui.View]bool{}}
+	o.popup = newWindow(popupTitle, cfg.Popup.Width, cfg.Popup.MaxHeight, &popupState{}, o.popupView)
 	o.ticker = newWindow(tickerTitle, 800, cfg.Ticker.Height, &tickerState{}, o.tickerView)
 	o.status = newWindow(statusTitle, statusW, statusH, &textState{}, o.statusView)
 	return o
@@ -117,62 +121,69 @@ func show(w *gui.Window, title string, place func(screen ontop.Rect) ontop.Rect,
 	w.InvalidateLayout()
 }
 
-func (o *Overlay) Show(v ui.View, text string) {
-	if v == ui.Ticker {
-		o.showTicker(text)
-		return
-	}
+// Update changes what the windows show. Open windows refresh; closed ones
+// stay closed and show the new content when opened.
+func (o *Overlay) Update(c ui.Content) {
 	o.mu.Lock()
-	o.popupGen++
-	gen := o.popupGen
+	o.content = c
+	popupOpen, tickerOpen := o.visible[ui.Popup], o.visible[ui.Ticker]
 	o.mu.Unlock()
 
 	o.onMain(func() {
-		gui.State[textState](o.popup).text = text
+		gui.State[popupState](o.popup).content = c
+		if popupOpen {
+			o.popup.InvalidateLayout()
+		}
+	})
+	if tickerOpen {
+		o.startTicker(tickerText(c), false)
+	}
+	if o.cfg.Status.Enabled {
+		switch c.State {
+		case ui.Thinking:
+			o.showStatus("● thinking…")
+		case ui.Ready:
+			o.Notify("✓ answer ready")
+		}
+	}
+}
+
+func (o *Overlay) Show(v ui.View) {
+	o.mu.Lock()
+	o.visible[v] = true
+	c := o.content
+	o.mu.Unlock()
+
+	if v == ui.Ticker {
+		o.startTicker(tickerText(c), true)
+		return
+	}
+	o.onMain(func() {
+		gui.State[popupState](o.popup).content = c
 		show(o.popup, popupTitle, func(s ontop.Rect) ontop.Rect {
 			return ontop.Rect{X: s.X + margin, Y: s.Y + margin, W: float64(o.cfg.Popup.Width), H: float64(o.cfg.Popup.MaxHeight)}
 		}, ontop.Options{})
 	})
-	if d := time.Duration(o.cfg.Popup.AutoHide); d > 0 {
-		time.AfterFunc(d, func() {
-			o.mu.Lock()
-			current := o.popupGen == gen
-			o.mu.Unlock()
-			if current {
-				o.Hide(ui.Popup)
-			}
-		})
-	}
 }
 
 func (o *Overlay) Hide(v ui.View) {
+	o.mu.Lock()
+	o.visible[v] = false
+	o.mu.Unlock()
 	if v == ui.Ticker {
 		o.stopTicker()
 		o.onMain(func() { ontop.Hide(tickerTitle) })
 		return
 	}
-	o.mu.Lock()
-	o.popupGen++ // cancel a pending autohide
-	o.mu.Unlock()
 	o.onMain(func() { ontop.Hide(popupTitle) })
 }
 
-func (o *Overlay) Busy(on bool) {
-	o.mu.Lock()
-	o.busy = on
-	o.noticeGen++
-	o.mu.Unlock()
-	if on {
-		o.showStatus("● thinking…")
-	} else {
-		o.onMain(func() { ontop.Hide(statusTitle) })
-	}
-}
-
-// Notify shows msg in the status pill for a moment (errors and switches
-// like "mode: ocr"), and also logs it.
+// Notify logs msg and, if the status pill is enabled, shows it briefly.
 func (o *Overlay) Notify(msg string) {
 	fmt.Println("peekai:", msg)
+	if !o.cfg.Status.Enabled {
+		return
+	}
 	o.mu.Lock()
 	o.noticeGen++
 	gen := o.noticeGen
@@ -181,11 +192,11 @@ func (o *Overlay) Notify(msg string) {
 	time.AfterFunc(noticeAfter, func() {
 		o.mu.Lock()
 		stale := o.noticeGen != gen
-		busy := o.busy
+		thinking := o.content.State == ui.Thinking
 		o.mu.Unlock()
 		switch {
 		case stale:
-		case busy:
+		case thinking:
 			o.showStatus("● thinking…")
 		default:
 			o.onMain(func() { ontop.Hide(statusTitle) })
@@ -202,29 +213,47 @@ func (o *Overlay) showStatus(text string) {
 	})
 }
 
-func (o *Overlay) showTicker(text string) {
+// tickerText is the single line the running line scrolls.
+func tickerText(c ui.Content) string {
+	var s string
+	switch c.State {
+	case ui.Thinking:
+		s = "● thinking… (" + c.Prompt + ")"
+	case ui.Failed:
+		s = "✕ " + c.Text
+	default:
+		s = c.Body()
+	}
+	return strings.Join(strings.Fields(s), " ") // one line: newlines → spaces
+}
+
+// startTicker scrolls line in the running line. With place it also puts
+// the window on screen (on Show); otherwise it only swaps the text of the
+// already open window.
+func (o *Overlay) startTicker(line string, place bool) {
 	o.stopTicker()
-	line := strings.Join(strings.Fields(text), " ") // one line: newlines → spaces
 	stop := make(chan struct{})
 	o.mu.Lock()
 	o.stopTick = stop
 	o.mu.Unlock()
 
 	o.onMain(func() {
-		var screenW float64
-		show(o.ticker, tickerTitle, func(s ontop.Rect) ontop.Rect {
-			screenW = s.W
-			h := float64(o.cfg.Ticker.Height)
-			y := s.Y + s.H - h
-			if o.cfg.Ticker.Position == "top" {
-				y = s.Y
-			}
-			return ontop.Rect{X: s.X, Y: y, W: s.W, H: h}
-		}, ontop.Options{ClickThrough: true})
+		if place {
+			show(o.ticker, tickerTitle, func(s ontop.Rect) ontop.Rect {
+				h := float64(o.cfg.Ticker.Height)
+				y := s.Y + s.H - h
+				if o.cfg.Ticker.Position == "top" {
+					y = s.Y
+				}
+				return ontop.Rect{X: s.X, Y: y, W: s.W, H: h}
+			}, ontop.Options{ClickThrough: true})
+		}
 		st := gui.State[tickerState](o.ticker)
 		st.text = line
 		st.textW = o.ticker.TextWidth(line, tickerStyle())
-		st.offset = -float32(screenW) // start just off the right edge
+		winW, _ := o.ticker.WindowSize()
+		st.offset = -float32(winW) // start just off the right edge
+		o.ticker.InvalidateLayout()
 	})
 
 	go o.animate(stop)
@@ -271,17 +300,26 @@ func bg(opacity float64) gui.Color { return gui.RGBA(18, 18, 22, uint8(opacity*2
 func tickerStyle() gui.TextStyle { return gui.TextStyle{Size: textSize + 2, Color: fg} }
 
 func (o *Overlay) popupView(w *gui.Window) gui.View {
+	c := gui.State[popupState](w).content
 	return gui.Column(gui.ContainerCfg{
 		Sizing:     gui.FillFill,
 		Color:      bg(o.cfg.Popup.Opacity),
 		Radius:     gui.RadiusPx(10),
 		Padding:    gui.PadAll(16),
+		Spacing:    gui.SpacingPx(10),
 		Scrollable: true,
-		Content: []gui.View{gui.Text(gui.TextCfg{
-			Text:      gui.State[textState](w).text,
-			Mode:      gui.TextModeWrap,
-			TextStyle: gui.TextStyle{Size: textSize, Color: fg, LineSpacing: 4},
-		})},
+		Content: []gui.View{
+			gui.Text(gui.TextCfg{
+				Text:      c.Header(),
+				Mode:      gui.TextModeSingleLine,
+				TextStyle: gui.TextStyle{Size: textSize - 3, Color: dim},
+			}),
+			gui.Text(gui.TextCfg{
+				Text:      c.Body(),
+				Mode:      gui.TextModeWrap,
+				TextStyle: gui.TextStyle{Size: textSize, Color: fg, LineSpacing: 4},
+			}),
+		},
 	})
 }
 

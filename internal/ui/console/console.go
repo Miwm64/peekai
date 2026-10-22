@@ -1,5 +1,5 @@
-// Package console is a ui.Presenter that prints to a terminal. It stands in
-// until the on-top windows exist and stays useful for debugging.
+// Package console is a ui.Presenter that prints to a terminal, for
+// debugging and machines without a display.
 package console
 
 import (
@@ -13,28 +13,50 @@ import (
 )
 
 type Presenter struct {
-	mu  sync.Mutex
-	out io.Writer
+	mu      sync.Mutex
+	out     io.Writer
+	content ui.Content
+	visible map[ui.View]bool
 }
 
-func New(out io.Writer) *Presenter { return &Presenter{out: out} }
-
-func (p *Presenter) Show(v ui.View, text string) {
-	p.printf("── %s ──\n%s\n%s\n", v, text, strings.Repeat("─", 40))
+func New(out io.Writer) *Presenter {
+	return &Presenter{out: out, visible: map[ui.View]bool{}}
 }
 
-func (p *Presenter) Hide(v ui.View) { p.printf("[%s hidden]\n", v) }
-
-func (p *Presenter) Busy(on bool) {
-	if on {
-		p.printf("[working…]\n")
+func (p *Presenter) Update(c ui.Content) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.content = c
+	p.printf("[%s]\n", c.Header())
+	for v, on := range p.visible {
+		if on {
+			p.print(v)
+		}
 	}
 }
 
-func (p *Presenter) Notify(msg string) { p.printf("[%s] %s\n", time.Now().Format("15:04:05"), msg) }
-
-func (p *Presenter) printf(format string, args ...any) {
+func (p *Presenter) Show(v ui.View) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	fmt.Fprintf(p.out, format, args...)
+	p.visible[v] = true
+	p.print(v)
 }
+
+func (p *Presenter) Hide(v ui.View) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.visible[v] = false
+	p.printf("[%s hidden]\n", v)
+}
+
+func (p *Presenter) Notify(msg string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.printf("[%s] %s\n", time.Now().Format("15:04:05"), msg)
+}
+
+func (p *Presenter) print(v ui.View) {
+	p.printf("── %s: %s ──\n%s\n%s\n", v, p.content.Header(), p.content.Body(), strings.Repeat("─", 40))
+}
+
+func (p *Presenter) printf(format string, args ...any) { fmt.Fprintf(p.out, format, args...) }
