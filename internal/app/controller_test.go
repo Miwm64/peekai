@@ -351,3 +351,92 @@ func TestAutoClearKeepsWindowsButNotContext(t *testing.T) {
 	h.expect("update ● thinking… · a · image | seen 0")
 	h.expectReady("seen 0")
 }
+
+// runUntilReload starts a controller, feeds it actions and returns what Run gave back.
+func runUntilReload(t *testing.T, c *Controller, actions ...string) error {
+	t.Helper()
+	ch := make(chan string)
+	done := make(chan error, 1)
+	go func() { done <- c.Run(context.Background(), ch) }()
+	for _, a := range actions {
+		ch <- a
+	}
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(2 * time.Second):
+		t.Fatal("Run did not return")
+		return nil
+	}
+}
+
+func TestReloadHandsOverState(t *testing.T) {
+	calls := make(chan string, 64)
+	cfg := config.Default()
+	cfg.Prompts.List = map[string]string{"a": "A", "b": "B"}
+	cfg.Prompts.Active = "a"
+	cfg.AutoClear = false
+	deps := Deps{
+		Pipeline:  pipeline.Pipeline{Capturer: screen{}, AI: fakeAI{}},
+		NewOCR:    func(ai.Provider) (pipeline.Recognizer, error) { return fakeOCR{}, nil },
+		UI:        &recorder{calls: calls},
+		Clipboard: func(string) error { return nil },
+	}
+
+	first := New(cfg, deps)
+	ch := make(chan string)
+	done := make(chan error, 1)
+	go func() { done <- first.Run(context.Background(), ch) }()
+	ch <- ActCyclePrompt // a → b
+	ch <- ActToggleMode  // image → ocr
+	ch <- ActTogglePopup
+	ch <- ActCapture
+	// Wait for the answer before reloading.
+	deadline := time.After(2 * time.Second)
+	for answered := false; !answered; {
+		select {
+		case c := <-calls:
+			answered = strings.HasPrefix(c, "update ✓ answer")
+		case <-deadline:
+			t.Fatal("no answer before reload")
+		}
+	}
+	ch <- ActReload
+	if err := <-done; !errors.Is(err, ErrReload) {
+		t.Fatalf("Run = %v, want ErrReload", err)
+	}
+	snap := first.Snapshot()
+
+	deps.Restore = &snap
+	second := New(cfg, deps) // config still says prompt a, mode image
+	if err := runUntilReload(t, second, ActQuit); err != nil {
+		t.Fatal(err)
+	}
+	if second.active != "b" || second.mode != config.ModeOCR {
+		t.Errorf("runtime choices lost: prompt=%s mode=%s", second.active, second.mode)
+	}
+	if second.last != "B/text:words" || len(second.history) != 1 || !second.visible[ui.Popup] {
+		t.Errorf("state lost: last=%q history=%d visible=%v", second.last, len(second.history), second.visible)
+	}
+	if second.content.State != ui.Ready || second.content.Stale {
+		t.Errorf("content = %+v", second.content)
+	}
+}
+
+func TestReloadDropsPromptThatNoLongerExists(t *testing.T) {
+	cfg := config.Default()
+	cfg.Prompts.List = map[string]string{"a": "A", "b": "B"}
+	cfg.Prompts.Active = "a"
+	c := New(cfg, Deps{UI: &recorder{calls: make(chan string, 16)}, Pipeline: pipeline.Pipeline{AI: fakeAI{}}})
+	c.active = "b"
+	snap := c.Snapshot()
+
+	cfg.Prompts.List = map[string]string{"a": "A"} // b removed from config.json
+	next := New(cfg, Deps{UI: &recorder{calls: make(chan string, 16)}, Pipeline: pipeline.Pipeline{AI: fakeAI{}}, Restore: &snap})
+	if err := runUntilReload(t, next, ActQuit); err != nil {
+		t.Fatal(err)
+	}
+	if next.active != "a" {
+		t.Errorf("active = %q, want config's a", next.active)
+	}
+}

@@ -28,8 +28,14 @@ const (
 	ActToggleMode   = "toggle_mode"
 	ActCopyResult   = "copy_result"
 	ActClear        = "clear"
+	ActReload       = "reload_config"
 	ActQuit         = "quit"
 )
+
+// ErrReload is returned by Run when the user asked to reload the config.
+// The caller loads it again and starts a new Controller with the
+// Snapshot of this one.
+var ErrReload = errors.New("reload config")
 
 // Deps are the controller's collaborators.
 type Deps struct {
@@ -43,6 +49,61 @@ type Deps struct {
 	NewOCR    func(ai.Provider) (pipeline.Recognizer, error)
 	UI        ui.Presenter
 	Clipboard func(text string) error
+	// Restore continues from a previous controller after a config reload.
+	Restore *Snapshot
+}
+
+// Snapshot is what a controller hands to its successor on reload: the
+// last answer, the AI context, what's open, and the runtime choices
+// (kept when they still exist in the new config).
+type Snapshot struct {
+	content ui.Content
+	last    string
+	history []ai.Turn
+	answer  settings
+	visible map[ui.View]bool
+	current settings
+}
+
+// Snapshot captures the state to carry across a config reload.
+func (c *Controller) Snapshot() Snapshot {
+	return Snapshot{
+		content: c.content,
+		last:    c.last,
+		history: slices.Clone(c.history),
+		answer:  c.answer,
+		visible: maps.Clone(c.visible),
+		current: c.current(),
+	}
+}
+
+// restore takes over a previous controller's state.
+func (c *Controller) restore(s Snapshot) {
+	c.content, c.last, c.history, c.answer = s.content, s.last, s.history, s.answer
+	if s.visible != nil {
+		c.visible = s.visible
+	}
+	if c.content.State == ui.Thinking { // that run ended with the old controller
+		c.content.State = ui.Idle
+		if c.last != "" {
+			c.content.State = ui.Ready
+		}
+	}
+	if s.current.mode != "" {
+		c.mode = s.current.mode
+	}
+	if _, ok := c.prompts[s.current.prompt]; ok {
+		c.active = s.current.prompt
+	}
+	for i, o := range c.aiOpts {
+		if o.Provider == s.current.provider && o.Model == s.current.model {
+			if p, err := o.New(); err == nil {
+				c.aiIdx, c.aiBuilt[i] = i, p
+				c.deps.Pipeline.AI = p
+			}
+			break
+		}
+	}
 }
 
 // AIOption is one provider/model to switch to; New is called on first use.
@@ -113,6 +174,9 @@ func New(cfg config.Config, deps Deps) *Controller {
 func (c *Controller) Run(ctx context.Context, actions <-chan string) error {
 	defer c.stop()
 	c.content = ui.Content{State: ui.Idle}
+	if c.deps.Restore != nil {
+		c.restore(*c.deps.Restore)
+	}
 	c.publish()
 	for {
 		select {
@@ -121,6 +185,9 @@ func (c *Controller) Run(ctx context.Context, actions <-chan string) error {
 		case a, ok := <-actions:
 			if !ok || a == ActQuit {
 				return nil
+			}
+			if a == ActReload {
+				return ErrReload
 			}
 			c.handle(ctx, a)
 		case r := <-c.results:
