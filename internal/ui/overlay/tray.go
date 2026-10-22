@@ -48,8 +48,13 @@ func (o *Overlay) trayCfg(c ui.Content) gui.SystemTrayCfg {
 		{ID: trayStatusID, Text: status, Disabled: true},
 		{Separator: true},
 	}
+	// A section, not a submenu: go-gui's macOS tray also lists submenu
+	// items at the end of the top-level menu (it builds the menu from the
+	// flattened item list), so every model would show twice.
 	if len(c.Models) > 0 {
-		menu = append(menu, gui.NativeMenuItemCfg{Text: "Models", Submenu: modelItems(c)}, gui.NativeMenuItemCfg{Separator: true})
+		menu = append(menu, gui.NativeMenuItemCfg{ID: trayStatusID, Text: "Models", Disabled: true})
+		menu = append(menu, modelItems(c)...)
+		menu = append(menu, gui.NativeMenuItemCfg{Separator: true})
 	}
 	return gui.SystemTrayCfg{
 		Tooltip: "peekai — " + status,
