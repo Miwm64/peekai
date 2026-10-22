@@ -17,10 +17,14 @@ import (
 // recorder is a ui.Presenter that reports every call on a channel.
 type recorder struct{ calls chan string }
 
-func (r *recorder) Update(c ui.Content) { r.calls <- "update " + c.Header() + " | " + c.Text }
-func (r *recorder) Show(v ui.View)      { r.calls <- "show " + v.String() }
-func (r *recorder) Hide(v ui.View)      { r.calls <- "hide " + v.String() }
-func (r *recorder) Notify(msg string)   { r.calls <- "notify " + msg }
+// Update drops the provider/model part of the header to keep expectations
+// short; TestHeaderShowsProviderAndModel checks it.
+func (r *recorder) Update(c ui.Content) {
+	r.calls <- "update " + strings.Replace(c.Header(), " · ollama/qwen2.5vl:7b", "", 1) + " | " + c.Text
+}
+func (r *recorder) Show(v ui.View)    { r.calls <- "show " + v.String() }
+func (r *recorder) Hide(v ui.View)    { r.calls <- "hide " + v.String() }
+func (r *recorder) Notify(msg string) { r.calls <- "notify " + msg }
 
 type screen struct{}
 
@@ -160,8 +164,25 @@ func TestCyclePromptAndToggleMode(t *testing.T) {
 	h.send(ActCapture)
 	h.expect("update ● thinking… · b · ocr | ")
 	h.expectReady("B/text:words")
-	h.send(ActCyclePrompt) // after an answer, only a notice
-	h.expect("notify prompt: fail")
+	h.send(ActCyclePrompt) // after an answer: title updates, answer kept as previous
+	h.expect("notify prompt: fail", "update previous answer · fail · ocr | B/text:words")
+	h.send(ActCyclePrompt)
+	h.expect("notify prompt: slow", "update previous answer · slow · ocr | B/text:words")
+	h.send(ActCyclePrompt) // back to the answer's own settings: no longer stale
+	h.send(ActToggleMode)
+	h.expect("notify prompt: a", "update previous answer · a · ocr | B/text:words",
+		"notify mode: image", "update previous answer · a · image | B/text:words")
+}
+
+func TestHeaderShowsProviderAndModel(t *testing.T) {
+	c := ui.Content{State: ui.Ready, Text: "x", Prompt: "explain", Mode: "image", Provider: "routerai", Model: "gpt-x"}
+	if h := c.Header(); !strings.Contains(h, "explain · image · routerai/gpt-x") {
+		t.Errorf("header = %q", h)
+	}
+	c.Stale = true
+	if h, b := c.Header(), c.Body(); !strings.HasPrefix(h, "previous answer") || b != "(previous answer)\nx" {
+		t.Errorf("stale header/body = %q / %q", h, b)
+	}
 }
 
 func TestHideAllKeepsRunning(t *testing.T) {
@@ -190,8 +211,8 @@ func TestRetriggerReplacesRun(t *testing.T) {
 	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
 	h.send(ActCapture)
 	h.expect("update ● thinking… · slow · image | ")
-	h.send(ActCyclePrompt) // slow → a (sorted: a, b, fail, slow)
-	h.expect("notify prompt: a")
+	h.send(ActCyclePrompt) // slow → a (sorted: a, b, fail, slow); title updates at once
+	h.expect("notify prompt: a", "update ● thinking… · a · image | ")
 	h.send(ActCapture)
 	h.expect("update ● thinking… · a · image | ")
 	h.expectReady("A/image")

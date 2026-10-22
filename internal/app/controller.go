@@ -48,9 +48,14 @@ type Controller struct {
 	names   []string // sorted prompt names, for cycling
 	active  string
 
+	provider, model string
+
 	content ui.Content // what the windows display
 	last    string     // last answer, for copy
-	visible map[ui.View]bool
+	// answerPrompt/answerMode are the settings the shown answer was made
+	// with; when they differ from the current ones it is marked stale.
+	answerPrompt, answerMode string
+	visible                  map[ui.View]bool
 
 	runID   int
 	cancel  context.CancelFunc
@@ -67,21 +72,23 @@ type result struct {
 
 func New(cfg config.Config, deps Deps) *Controller {
 	return &Controller{
-		deps:    deps,
-		mode:    cfg.Mode,
-		prompts: cfg.Prompts.List,
-		names:   slices.Sorted(maps.Keys(cfg.Prompts.List)),
-		active:  cfg.Prompts.Active,
-		visible: map[ui.View]bool{},
-		results: make(chan result),
+		deps:     deps,
+		provider: cfg.AI.Provider,
+		model:    cfg.AI.Model,
+		mode:     cfg.Mode,
+		prompts:  cfg.Prompts.List,
+		names:    slices.Sorted(maps.Keys(cfg.Prompts.List)),
+		active:   cfg.Prompts.Active,
+		visible:  map[ui.View]bool{},
+		results:  make(chan result),
 	}
 }
 
 // Run handles actions until quit, ctx is done or actions is closed.
 func (c *Controller) Run(ctx context.Context, actions <-chan string) error {
 	defer c.stop()
-	c.content = ui.Content{State: ui.Idle, Prompt: c.active, Mode: c.mode}
-	c.deps.UI.Update(c.content)
+	c.content = ui.Content{State: ui.Idle}
+	c.publish()
 	for {
 		select {
 		case <-ctx.Done():
@@ -118,7 +125,7 @@ func (c *Controller) handle(ctx context.Context, action string) {
 		i := slices.Index(c.names, c.active)
 		c.active = c.names[(i+1)%len(c.names)]
 		c.deps.UI.Notify("prompt: " + c.active)
-		c.refreshIdle()
+		c.publish()
 	case ActToggleMode:
 		if c.mode == config.ModeOCR {
 			c.mode = config.ModeImage
@@ -126,15 +133,15 @@ func (c *Controller) handle(ctx context.Context, action string) {
 			c.mode = config.ModeOCR
 		}
 		c.deps.UI.Notify("mode: " + c.mode)
-		c.refreshIdle()
+		c.publish()
 	case ActCopyResult:
 		c.copyLast()
 	case ActClear:
 		// Forget everything; open windows stay open and show the empty state.
 		c.stop()
 		c.last = ""
-		c.content = ui.Content{State: ui.Idle, Prompt: c.active, Mode: c.mode}
-		c.deps.UI.Update(c.content)
+		c.content = ui.Content{State: ui.Idle}
+		c.publish()
 		c.deps.UI.Notify("cleared")
 	default:
 		c.deps.UI.Notify("unknown action: " + action)
@@ -162,8 +169,8 @@ func (c *Controller) start(ctx context.Context) {
 	prompt, mode := c.active, c.mode
 	opts := pipeline.Options{Mode: mode, Prompt: c.prompts[prompt]}
 
-	c.content = ui.Content{State: ui.Thinking, Text: c.last, Prompt: prompt, Mode: mode}
-	c.deps.UI.Update(c.content)
+	c.content = ui.Content{State: ui.Thinking, Text: c.last}
+	c.publish()
 	go func() {
 		res, err := p.Run(runCtx, opts)
 		select {
@@ -183,21 +190,24 @@ func (c *Controller) finish(r result) {
 	case errors.Is(r.err, context.Canceled):
 		return
 	case r.err != nil:
-		c.content = ui.Content{State: ui.Failed, Text: r.err.Error(), Prompt: r.prompt, Mode: r.mode}
+		c.content = ui.Content{State: ui.Failed, Text: r.err.Error()}
 		c.deps.UI.Notify("error: " + r.err.Error())
 	default:
 		c.last = r.res.Answer
-		c.content = ui.Content{State: ui.Ready, Text: c.last, Prompt: r.prompt, Mode: r.mode, At: time.Now()}
+		c.content = ui.Content{State: ui.Ready, Text: c.last, At: time.Now()}
 	}
-	c.deps.UI.Update(c.content)
+	c.answerPrompt, c.answerMode = r.prompt, r.mode
+	c.publish()
 }
 
-// refreshIdle shows the new prompt/mode while nothing has been captured.
-func (c *Controller) refreshIdle() {
-	if c.content.State == ui.Idle {
-		c.content.Prompt, c.content.Mode = c.active, c.mode
-		c.deps.UI.Update(c.content)
-	}
+// publish sends the content with the current settings, marking a finished
+// answer stale when it was made with other ones.
+func (c *Controller) publish() {
+	c.content.Prompt, c.content.Mode = c.active, c.mode
+	c.content.Provider, c.content.Model = c.provider, c.model
+	done := c.content.State == ui.Ready || c.content.State == ui.Failed
+	c.content.Stale = done && (c.answerPrompt != c.active || c.answerMode != c.mode)
+	c.deps.UI.Update(c.content)
 }
 
 // stop cancels the in-flight analysis, if any.
