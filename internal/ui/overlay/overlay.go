@@ -48,7 +48,7 @@ type textState struct{ text string }
 
 type tickerState struct {
 	text  string
-	x     float32 // left edge of the text in the bar, px; grows as it moves right
+	x     float32 // left edge of the text in the bar, px; shrinks as it moves left
 	textW float32
 }
 
@@ -253,14 +253,18 @@ func (o *Overlay) startTicker(line string, place bool) {
 		st := gui.State[tickerState](o.ticker)
 		st.text = line
 		st.textW = o.ticker.TextWidth(line, tickerStyle())
-		st.x = tickerInset // visible at once; later loops enter from the left
+		winW, _ := o.ticker.WindowSize()
+		st.x = float32(winW) // enters right at the right edge
+		if o.cfg.Ticker.Start == "left" {
+			st.x = tickerInset // already visible at the left
+		}
 		o.ticker.InvalidateLayout()
 	})
 
 	go o.animate(stop)
 }
 
-// animate moves the running line right at the configured speed, looping.
+// animate moves the running line left at the configured speed, looping.
 func (o *Overlay) animate(stop chan struct{}) {
 	t := time.NewTicker(frame)
 	defer t.Stop()
@@ -274,9 +278,10 @@ func (o *Overlay) animate(stop chan struct{}) {
 			last = now
 			o.ticker.QueueCommand(func(w *gui.Window) {
 				st := gui.State[tickerState](w)
-				st.x += float32(o.cfg.Ticker.Speed) * dt
-				if winW, _ := w.WindowSize(); st.x > float32(winW) {
-					st.x = -st.textW // gone off the right: re-enter from the left
+				st.x -= float32(o.cfg.Ticker.Speed) * dt
+				if st.x < -st.textW { // gone off the left: re-enter at the right edge
+					winW, _ := w.WindowSize()
+					st.x = float32(winW)
 				}
 				w.InvalidateRender()
 			})
