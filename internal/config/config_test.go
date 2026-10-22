@@ -87,6 +87,7 @@ func TestParseErrors(t *testing.T) {
 		{"missing active prompt", `{"prompts": {"active": "nope"}}`, "prompts.active"},
 		{"bad opacity", `{"ui": {"popup": {"opacity": 1.5}}}`, "ui.popup.opacity"},
 		{"bad position", `{"ui": {"ticker": {"position": "left"}}}`, "ui.ticker.position"},
+		{"bad start", `{"ui": {"ticker": {"start": "middle"}}}`, "ui.ticker.start"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

@@ -66,6 +66,9 @@ func (c Config) Validate() error {
 	if t.Position != "bottom" && t.Position != "top" {
 		add("ui.ticker.position: want \"bottom\" or \"top\", got %q", t.Position)
 	}
+	if t.Start != "right" && t.Start != "left" {
+		add("ui.ticker.start: want \"right\" or \"left\", got %q", t.Start)
+	}
 	p := c.UI.Popup
 	if p.Width <= 0 || p.MaxHeight <= 0 {
 		add("ui.popup: width and max_height must be positive")
