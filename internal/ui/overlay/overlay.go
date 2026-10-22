@@ -58,24 +58,26 @@ type tickerState struct {
 // Overlay implements ui.Presenter. Create it with New and start it with Run
 // on the main goroutine.
 type Overlay struct {
-	cfg config.UI
-
 	app    *gui.App
 	popup  *gui.Window
 	ticker *gui.Window
 	status *gui.Window
 
-	mu        sync.Mutex
-	content   ui.Content
-	visible   map[ui.View]bool
-	stopTick  chan struct{} // closes to stop the running line animation
+	mu       sync.Mutex
+	uiCfg    config.UI // read through ui(); replaced by SetUI on reload
+	content  ui.Content
+	visible  map[ui.View]bool
+	stopTick chan struct{} // closes to stop the running line animation
+
+	actions   chan string           // tray clicks, see Actions
+	tray      *gui.SystemTrayHandle // UI thread only
 	noticeGen int
 }
 
 var _ ui.Presenter = (*Overlay)(nil)
 
 func New(cfg config.UI) *Overlay {
-	o := &Overlay{cfg: cfg, app: gui.NewApp(), visible: map[ui.View]bool{}}
+	o := &Overlay{uiCfg: cfg, app: gui.NewApp(), visible: map[ui.View]bool{}, actions: make(chan string, 4)}
 	o.popup = newWindow(popupTitle, cfg.Popup.Width, cfg.Popup.MaxHeight, &popupState{}, o.popupView)
 	o.ticker = newWindow(tickerTitle, 800, cfg.Ticker.Height, &tickerState{}, o.tickerView)
 	o.status = newWindow(statusTitle, statusW, statusH, &textState{}, o.statusView)
@@ -101,6 +103,7 @@ func (o *Overlay) Run(work func() error) {
 			for _, t := range []string{popupTitle, tickerTitle, statusTitle} {
 				ontop.Hide(t)
 			}
+			o.startTray()
 		})
 		code := 0
 		if err := work(); err != nil {
@@ -110,6 +113,26 @@ func (o *Overlay) Run(work func() error) {
 		os.Exit(code)
 	}()
 	backend.RunApp(o.app, o.popup, o.ticker, o.status)
+}
+
+// ui returns the current UI settings.
+func (o *Overlay) ui() config.UI {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.uiCfg
+}
+
+// SetUI applies new UI settings (after a config reload). Open windows pick
+// them up when shown again; colors and opacity change at once.
+func (o *Overlay) SetUI(cfg config.UI) {
+	o.mu.Lock()
+	o.uiCfg = cfg
+	o.mu.Unlock()
+	o.onMain(func() {
+		for _, w := range []*gui.Window{o.popup, o.ticker, o.status} {
+			w.InvalidateLayout()
+		}
+	})
 }
 
 // onMain runs fn on the UI thread.
@@ -139,11 +162,12 @@ func (o *Overlay) Update(c ui.Content) {
 		if popupOpen {
 			o.popup.InvalidateLayout()
 		}
+		o.updateTray(c)
 	})
 	if tickerOpen {
 		o.startTicker(tickerText(c), false)
 	}
-	if o.cfg.Status.Enabled {
+	if o.ui().Status.Enabled {
 		switch c.State {
 		case ui.Thinking:
 			o.showStatus("● thinking…")
@@ -166,7 +190,7 @@ func (o *Overlay) Show(v ui.View) {
 	o.onMain(func() {
 		gui.State[popupState](o.popup).content = c
 		show(o.popup, popupTitle, func(s ontop.Rect) ontop.Rect {
-			return ontop.Rect{X: s.X + margin, Y: s.Y + margin, W: float64(o.cfg.Popup.Width), H: float64(o.cfg.Popup.MaxHeight)}
+			return ontop.Rect{X: s.X + margin, Y: s.Y + margin, W: float64(o.ui().Popup.Width), H: float64(o.ui().Popup.MaxHeight)}
 		}, ontop.Options{})
 	})
 }
@@ -186,7 +210,7 @@ func (o *Overlay) Hide(v ui.View) {
 // Notify logs msg and, if the status pill is enabled, shows it briefly.
 func (o *Overlay) Notify(msg string) {
 	fmt.Println("peekai:", msg)
-	if !o.cfg.Status.Enabled {
+	if !o.ui().Status.Enabled {
 		return
 	}
 	o.mu.Lock()
@@ -245,9 +269,9 @@ func (o *Overlay) startTicker(line string, place bool) {
 	o.onMain(func() {
 		if place {
 			show(o.ticker, tickerTitle, func(s ontop.Rect) ontop.Rect {
-				h := float64(o.cfg.Ticker.Height)
+				h := float64(o.ui().Ticker.Height)
 				y := s.Y + s.H - h
-				if o.cfg.Ticker.Position == "top" {
+				if o.ui().Ticker.Position == "top" {
 					y = s.Y
 				}
 				return ontop.Rect{X: s.X, Y: y, W: s.W, H: h}
@@ -258,7 +282,7 @@ func (o *Overlay) startTicker(line string, place bool) {
 		st.textW = o.ticker.TextWidth(line, tickerStyle())
 		winW, _ := o.ticker.WindowSize()
 		st.x = float32(winW) // enters right at the right edge
-		if o.cfg.Ticker.Start == "left" {
+		if o.ui().Ticker.Start == "left" {
 			st.x = tickerInset // already visible at the left
 		}
 		o.ticker.InvalidateLayout()
@@ -281,7 +305,7 @@ func (o *Overlay) animate(stop chan struct{}) {
 			last = now
 			o.ticker.QueueCommand(func(w *gui.Window) {
 				st := gui.State[tickerState](w)
-				st.x -= float32(o.cfg.Ticker.Speed) * dt
+				st.x -= float32(o.ui().Ticker.Speed) * dt
 				if st.x < -st.textW { // gone off the left: re-enter at the right edge
 					winW, _ := w.WindowSize()
 					st.x = float32(winW)
@@ -311,7 +335,7 @@ func (o *Overlay) popupView(w *gui.Window) gui.View {
 	c := gui.State[popupState](w).content
 	return gui.Column(gui.ContainerCfg{
 		Sizing:     gui.FillFill,
-		Color:      bg(o.cfg.Popup.Opacity),
+		Color:      bg(o.ui().Popup.Opacity),
 		Radius:     gui.RadiusPx(10),
 		Padding:    gui.PadAll(16),
 		Spacing:    gui.SpacingPx(10),
@@ -335,7 +359,7 @@ func (o *Overlay) tickerView(w *gui.Window) gui.View {
 	st := gui.State[tickerState](w)
 	return gui.Row(gui.ContainerCfg{
 		Sizing:  gui.FillFill,
-		Color:   bg(o.cfg.Ticker.Opacity),
+		Color:   bg(o.ui().Ticker.Opacity),
 		Padding: gui.PadVH(6, 0),
 		Clip:    true,
 		Content: []gui.View{gui.Row(gui.ContainerCfg{
@@ -403,7 +427,7 @@ func (g guarded) Capture(ctx context.Context) (image.Image, error) {
 func (o *Overlay) restore() {
 	o.mu.Lock()
 	popup, ticker := o.visible[ui.Popup], o.visible[ui.Ticker]
-	status := o.cfg.Status.Enabled && o.content.State == ui.Thinking
+	status := o.uiCfg.Status.Enabled && o.content.State == ui.Thinking
 	o.mu.Unlock()
 	o.onMain(func() {
 		if popup {
