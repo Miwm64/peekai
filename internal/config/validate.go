@@ -3,20 +3,95 @@ package config
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"slices"
 	"strconv"
 	"strings"
 )
+
+var reasoningEfforts = []string{"none", "low", "medium", "high"}
 
 // Validate reports every invalid value at once.
 func (c Config) Validate() error {
 	var errs []error
 	add := func(format string, args ...any) { errs = append(errs, fmt.Errorf(format, args...)) }
 
-	if !slices.Contains([]string{ModeImage, ModeOCR}, c.Mode) {
-		add("mode: want %q or %q, got %q", ModeImage, ModeOCR, c.Mode)
+	if c.Version != Version {
+		add("version: want %d, got %d", Version, c.Version)
 	}
 
+	// capture
+	if !slices.Contains([]string{ModeImage, ModeOCR}, c.Capture.Mode) {
+		add("capture.mode: want %q or %q, got %q", ModeImage, ModeOCR, c.Capture.Mode)
+	}
+	if d := c.Capture.Display; !slices.Contains([]string{"mouse", "main", "all"}, d) {
+		if n, err := strconv.Atoi(d); err != nil || n < 0 {
+			add("capture.display: want \"mouse\", \"main\", \"all\" or a display index, got %q", d)
+		}
+	}
+	if c.Capture.MaxImagePx < 0 {
+		add("capture.max_image_px: must be >= 0 (0 = no downscale)")
+	}
+	if c.Capture.Mode == ModeOCR && c.OCR.Engine == "" {
+		add("ocr.engine: required when capture.mode is %q", ModeOCR)
+	}
+
+	// ai
+	providers := map[string]bool{}
+	for i, p := range c.AI.Providers {
+		where := fmt.Sprintf("ai.providers[%d]", i)
+		switch {
+		case p.Name == "":
+			add("%s: name is required", where)
+		case providers[p.Name]:
+			add("%s: name %q is used twice", where, p.Name)
+		default:
+			providers[p.Name] = true
+		}
+		if u, err := url.Parse(p.URL); err != nil || u.Scheme == "" || u.Host == "" {
+			add("%s (%s): url must be like https://host/v1, got %q", where, p.Name, p.URL)
+		}
+	}
+	models := map[string]bool{}
+	for i, m := range c.AI.Models {
+		where := fmt.Sprintf("ai.models[%d]", i)
+		switch {
+		case m.Name == "":
+			add("%s: name is required", where)
+		case models[m.Name]:
+			add("%s: name %q is used twice", where, m.Name)
+		default:
+			models[m.Name] = true
+		}
+		if !providers[m.Provider] {
+			add("%s (%s): provider %q is not in ai.providers", where, m.Name, m.Provider)
+		}
+		if m.Model == "" {
+			add("%s (%s): model is required", where, m.Name)
+		}
+		if m.ReasoningEffort != "" && !slices.Contains(reasoningEfforts, m.ReasoningEffort) {
+			add("%s (%s): reasoning_effort: want one of %s, got %q",
+				where, m.Name, strings.Join(reasoningEfforts, ", "), m.ReasoningEffort)
+		}
+	}
+	switch {
+	case len(c.AI.Models) == 0:
+		add("ai.models: needs at least one model")
+	case !models[c.AI.DefaultModel]:
+		add("ai.default_model: %q is not in ai.models", c.AI.DefaultModel)
+	}
+	if c.AI.Timeout <= 0 {
+		add("ai.timeout: must be positive")
+	}
+
+	// prompts
+	if len(c.Prompts.List) == 0 {
+		add("prompts.list: needs at least one prompt")
+	} else if _, ok := c.Prompts.List[c.Prompts.Default]; !ok {
+		add("prompts.default: %q is not in prompts.list", c.Prompts.Default)
+	}
+
+	// hotkeys
 	seen := map[string]string{}
 	for action, key := range c.Hotkeys.Bindings() {
 		norm := strings.ToLower(strings.ReplaceAll(key, " ", ""))
@@ -30,40 +105,37 @@ func (c Config) Validate() error {
 		}
 	}
 
-	if d := c.Capture.Display; d != "active" && d != "all" {
-		if n, err := strconv.Atoi(d); err != nil || n < 0 {
-			add("capture.display: want \"active\", \"all\" or a display index, got %q", d)
+	// ui
+	themes := slices.Clone(BuiltinThemes)
+	for i, t := range c.UI.Themes {
+		if t.Name == "" || slices.Contains(themes, t.Name) {
+			add("ui.themes[%d]: name %q is empty or already taken", i, t.Name)
+			continue
+		}
+		themes = append(themes, t.Name)
+	}
+	bases := map[string]string{}
+	for i, t := range c.UI.Themes {
+		if !slices.Contains(themes, t.Base) || t.Base == t.Name {
+			add("ui.themes[%d] (%s): base %q is not another theme", i, t.Name, t.Base)
+			continue
+		}
+		bases[t.Name] = t.Base
+	}
+	for _, t := range c.UI.Themes {
+		// Following base must reach a built-in theme; a loop never does.
+		name, steps := t.Name, 0
+		for bases[name] != "" && steps <= len(bases) {
+			name, steps = bases[name], steps+1
+		}
+		if steps > len(bases) {
+			add("ui.themes (%s): base chain loops back on itself", t.Name)
 		}
 	}
-
-	if c.Mode == ModeOCR && c.OCR.Engine == "" {
-		add("ocr.engine: required when mode is %q", ModeOCR)
+	if !slices.Contains(themes, c.UI.Theme) {
+		add("ui.theme: %q is not a built-in theme (%s) or in ui.themes",
+			c.UI.Theme, strings.Join(BuiltinThemes, ", "))
 	}
-
-	if c.AI.Provider == "" {
-		add("ai.provider: must not be empty")
-	}
-	if c.AI.Model == "" {
-		add("ai.model: must not be empty")
-	}
-	for i, alt := range c.AI.Alternatives {
-		if alt.Provider == "" || alt.Model == "" {
-			add("ai.alternatives[%d]: provider and model are required", i)
-		}
-	}
-	if c.AI.Timeout <= 0 {
-		add("ai.timeout: must be positive")
-	}
-	if c.AI.MaxImagePx < 0 {
-		add("ai.max_image_px: must be >= 0 (0 = no downscale)")
-	}
-
-	if len(c.Prompts.List) == 0 {
-		add("prompts.list: needs at least one prompt")
-	} else if _, ok := c.Prompts.List[c.Prompts.Active]; !ok {
-		add("prompts.active: %q is not in prompts.list", c.Prompts.Active)
-	}
-
 	t := c.UI.Ticker
 	if t.Speed <= 0 || t.Height <= 0 {
 		add("ui.ticker: speed and height must be positive")
