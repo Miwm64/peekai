@@ -30,8 +30,20 @@ func fakeServer(t *testing.T, status int, body string) (*httptest.Server, *http.
 	return srv, &gotReq, &gotBody
 }
 
-func cfgFor(provider, baseURL string) config.AI {
-	return config.AI{Provider: provider, BaseURL: baseURL, Model: "m1", Timeout: config.Duration(5 * time.Second)}
+// testKeyEnv is the key variable each test provider name uses.
+var testKeyEnv = map[string]string{
+	"routerai":   "ROUTERAI_API_KEY",
+	"openrouter": "OPENROUTER_API_KEY",
+	"grok":       "XAI_API_KEY",
+}
+
+// cfgFor describes model "m1" on a provider at url.
+func cfgFor(provider, url string) config.ResolvedModel {
+	return config.ResolvedModel{
+		Model:    config.Model{Name: "m1", Provider: provider, Model: "m1"},
+		Provider: config.Provider{Name: provider, URL: url, KeyEnv: testKeyEnv[provider]},
+		Timeout:  config.Duration(5 * time.Second),
+	}
 }
 
 const okBody = `{"choices":[{"message":{"content":"  the answer \n"}}]}`
@@ -110,7 +122,7 @@ func TestAnalyzeErrors(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			srv, _, _ := fakeServer(t, tt.status, tt.body)
-			p, err := New(cfgFor("openai_compat", srv.URL))
+			p, err := New(cfgFor("custom", srv.URL))
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -122,62 +134,48 @@ func TestAnalyzeErrors(t *testing.T) {
 	}
 }
 
-func TestNew(t *testing.T) {
+func TestNewNeedsKeyWhenKeyEnvIsSet(t *testing.T) {
 	t.Setenv("XAI_API_KEY", "")
-	tests := []struct {
-		name string
-		cfg  config.AI
-		want string
-	}{
-		{"unknown provider", cfgFor("gpt", ""), `unknown "gpt"`},
-		{"generic needs url", cfgFor("openai_compat", ""), "ai.base_url"},
-		{"grok needs key", cfgFor("grok", ""), "XAI_API_KEY"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			_, err := New(tt.cfg)
-			if err == nil || !strings.Contains(err.Error(), tt.want) {
-				t.Errorf("err = %v, want %q", err, tt.want)
-			}
-		})
+	_, err := New(cfgFor("grok", "https://api.x.ai/v1"))
+	if err == nil || !strings.Contains(err.Error(), "XAI_API_KEY") {
+		t.Errorf("err = %v", err)
 	}
 }
 
-func TestPresetDefaults(t *testing.T) {
-	t.Setenv("XAI_API_KEY", "k")
-	p, err := New(cfgFor("grok", ""))
-	if err != nil {
-		t.Fatal(err)
+func TestReasoningEffortSentOnlyWhenSet(t *testing.T) {
+	for _, effort := range []string{"", "none"} {
+		var raw map[string]any
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&raw)
+			_, _ = w.Write([]byte(okBody))
+		}))
+		m := cfgFor("ollama", srv.URL)
+		m.ReasoningEffort = effort
+		p, err := New(m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := p.Analyze(context.Background(), Request{Prompt: "x"}); err != nil {
+			t.Fatal(err)
+		}
+		srv.Close()
+		got, present := raw["reasoning_effort"]
+		if present != (effort != "") || (present && got != effort) {
+			t.Errorf("effort %q: body has reasoning_effort=%v (present %v)", effort, got, present)
+		}
 	}
-	if got := p.(*openAI).baseURL; got != "https://api.x.ai/v1" {
-		t.Errorf("grok baseURL = %s", got)
-	}
+}
 
-	t.Setenv("OPENROUTER_API_KEY", "k")
-	p, err = New(cfgFor("openrouter", ""))
+func TestGeminiArrayErrorIsUnwrapped(t *testing.T) {
+	body := `[{"error": {"code": 400, "message": "Please pass a valid API key", "status": "INVALID_ARGUMENT"}}]`
+	srv, _, _ := fakeServer(t, http.StatusBadRequest, body)
+	p, err := New(cfgFor("gemini", srv.URL))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := p.(*openAI).baseURL; got != "https://openrouter.ai/api/v1" {
-		t.Errorf("openrouter baseURL = %s", got)
-	}
-
-	t.Setenv("REQUESTY_API_KEY", "k")
-	p, err = New(cfgFor("requesty", ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := p.(*openAI).baseURL; got != "https://router.requesty.ai/v1" {
-		t.Errorf("requesty baseURL = %s", got)
-	}
-
-	t.Setenv("GEMINI_API_KEY", "k")
-	p, err = New(cfgFor("gemini", ""))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := p.(*openAI).baseURL; got != "https://generativelanguage.googleapis.com/v1beta/openai" {
-		t.Errorf("gemini baseURL = %s", got)
+	_, err = p.Analyze(context.Background(), Request{Prompt: "x"})
+	if err == nil || !strings.HasSuffix(err.Error(), "400 Bad Request: Please pass a valid API key") {
+		t.Errorf("err = %v", err)
 	}
 }
 
