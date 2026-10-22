@@ -32,6 +32,8 @@ const (
 	statusH     = 34
 	noticeAfter = 2 * time.Second
 	frame       = time.Second / 60
+	tickerInset = 16 // gap before the running line's text, px
+	tickerLift  = 8  // moves the running line's text up, px
 )
 
 var (
@@ -251,8 +253,7 @@ func (o *Overlay) startTicker(line string, place bool) {
 		st := gui.State[tickerState](o.ticker)
 		st.text = line
 		st.textW = o.ticker.TextWidth(line, tickerStyle())
-		winW, _ := o.ticker.WindowSize()
-		st.offset = -float32(winW) // start just off the right edge
+		st.offset = -tickerInset // visible at once; later loops enter from the right
 		o.ticker.InvalidateLayout()
 	})
 
@@ -325,16 +326,14 @@ func (o *Overlay) popupView(w *gui.Window) gui.View {
 
 func (o *Overlay) tickerView(w *gui.Window) gui.View {
 	st := gui.State[tickerState](w)
-	// The bar centers the scrolling row vertically, so the text sits in the
-	// middle whatever ui.ticker.height is. The inner row keeps its natural
-	// size; making it fill the bar left it empty.
 	return gui.Row(gui.ContainerCfg{
-		Sizing: gui.FillFill,
-		Color:  bg(o.cfg.Ticker.Opacity),
-		VAlign: gui.VAlignMiddle,
-		Clip:   true,
+		Sizing:  gui.FillFill,
+		Color:   bg(o.cfg.Ticker.Opacity),
+		Padding: gui.PadVH(6, 0),
+		Clip:    true,
 		Content: []gui.View{gui.Row(gui.ContainerCfg{
-			TransformFn: func() gui.Transform { return gui.Translate(-gui.State[tickerState](w).offset, 0) },
+			// go-gui draws the line's text low in its box; lift it to center it.
+			TransformFn: func() gui.Transform { return gui.Translate(-gui.State[tickerState](w).offset, -tickerLift) },
 			Content:     []gui.View{gui.Text(gui.TextCfg{Text: st.text, Mode: gui.TextModeSingleLine, TextStyle: tickerStyle()})},
 		})},
 	})
