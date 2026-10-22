@@ -325,16 +325,15 @@ func (o *Overlay) popupView(w *gui.Window) gui.View {
 
 func (o *Overlay) tickerView(w *gui.Window) gui.View {
 	st := gui.State[tickerState](w)
-	// Both rows fill the bar's height and center their content vertically,
-	// so the text sits in the middle whatever ui.ticker.height is.
+	// The bar centers the scrolling row vertically, so the text sits in the
+	// middle whatever ui.ticker.height is. The inner row keeps its natural
+	// size; making it fill the bar left it empty.
 	return gui.Row(gui.ContainerCfg{
 		Sizing: gui.FillFill,
 		Color:  bg(o.cfg.Ticker.Opacity),
 		VAlign: gui.VAlignMiddle,
 		Clip:   true,
 		Content: []gui.View{gui.Row(gui.ContainerCfg{
-			Sizing:      gui.FitFill,
-			VAlign:      gui.VAlignMiddle,
 			TransformFn: func() gui.Transform { return gui.Translate(-gui.State[tickerState](w).offset, 0) },
 			Content:     []gui.View{gui.Text(gui.TextCfg{Text: st.text, Mode: gui.TextModeSingleLine, TextStyle: tickerStyle()})},
 		})},
