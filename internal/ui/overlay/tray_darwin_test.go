@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"testing"
 
+	"github.com/Miwm64/peekai/internal/config"
 	"github.com/Miwm64/peekai/internal/ui"
 )
 
@@ -13,7 +14,7 @@ func TestTrayMenuModelsOnlyInSubmenu(t *testing.T) {
 	c := ui.Content{Model: "b", Prompt: "p", Mode: "image", Models: []ui.ModelInfo{
 		{Name: "a", Free: true, Vision: true}, {Name: "b", Vision: true, Description: "desc"},
 	}}
-	items := flatten(trayMenu(c), -1, nil)
+	items := flatten(New(config.Default().UI).trayMenu(c), -1, nil)
 
 	var top, models []string
 	modelsIdx := -1

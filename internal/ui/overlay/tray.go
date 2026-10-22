@@ -12,6 +12,7 @@ import (
 	"github.com/go-gui-org/go-gui/gui"
 
 	"github.com/Miwm64/peekai/internal/ui"
+	"github.com/Miwm64/peekai/internal/ui/theme"
 )
 
 // Tray menu item IDs are controller action names, so a click is passed on
@@ -24,19 +25,37 @@ func (o *Overlay) Actions() <-chan string { return o.actions }
 // startTray creates the tray icon. UI thread only. A missing tray (some
 // Linux desktops) is not fatal: everything still works by hotkey.
 func (o *Overlay) startTray() {
-	if err := o.tray.start(o, trayMenu(ui.Content{}), trayTooltip(ui.Content{})); err != nil {
+	if err := o.tray.start(o, o.trayMenu(ui.Content{}), trayTooltip(ui.Content{})); err != nil {
 		fmt.Fprintln(os.Stderr, "peekai: no tray icon:", err)
 	}
 }
 
 // updateTray shows c in the tray menu and tooltip. UI thread only.
 func (o *Overlay) updateTray(c ui.Content) {
-	o.tray.update(o, trayMenu(c), trayTooltip(c))
+	o.tray.update(o, o.trayMenu(c), trayTooltip(c))
 }
 
-// onTrayAction passes a menu click to the controller.
+// Tray actions the overlay handles itself; everything else goes to the
+// controller.
+const (
+	traySettingsID = "settings"
+	trayThemeID    = "theme:"
+)
+
+// onTrayAction handles a menu click.
 func (o *Overlay) onTrayAction(id string) {
 	if id == trayStatusID || id == "" {
+		return
+	}
+	if name, ok := strings.CutPrefix(id, trayThemeID); ok {
+		o.mu.Lock()
+		o.themeSel = name
+		o.mu.Unlock()
+		o.applyTheme()
+		return
+	}
+	if id == traySettingsID {
+		o.openSettings()
 		return
 	}
 	select {
@@ -54,25 +73,43 @@ func trayStatus(c ui.Content) string {
 
 func trayTooltip(c ui.Content) string { return "peekai — " + trayStatus(c) }
 
-// trayMenu is the tray menu for c: status, a Models submenu, show/hide,
-// reload and quit. Item IDs are controller action names.
-func trayMenu(c ui.Content) []gui.NativeMenuItemCfg {
+// trayMenu is the tray menu for c: status, Models and Theme submenus,
+// show/hide, settings, reload and quit. Item IDs are action names.
+func (o *Overlay) trayMenu(c ui.Content) []gui.NativeMenuItemCfg {
 	menu := []gui.NativeMenuItemCfg{
 		{ID: trayStatusID, Text: trayStatus(c), Disabled: true},
 		{Separator: true},
 	}
 	if len(c.Models) > 0 {
-		menu = append(menu,
-			gui.NativeMenuItemCfg{Text: "Models", Submenu: modelItems(c)},
-			gui.NativeMenuItemCfg{Separator: true})
+		menu = append(menu, gui.NativeMenuItemCfg{Text: "Models", Submenu: modelItems(c)})
 	}
+	menu = append(menu, gui.NativeMenuItemCfg{Text: "Theme", Submenu: o.themeItems()}, gui.NativeMenuItemCfg{Separator: true})
 	return append(menu,
 		gui.NativeMenuItemCfg{ID: "toggle_popup", Text: "Show / hide popup"},
 		gui.NativeMenuItemCfg{ID: "toggle_ticker", Text: "Show / hide running line"},
 		gui.NativeMenuItemCfg{Separator: true},
+		gui.NativeMenuItemCfg{ID: traySettingsID, Text: "Settings…"},
 		gui.NativeMenuItemCfg{ID: "reload_config", Text: "Reload config"},
+		gui.NativeMenuItemCfg{Separator: true},
 		gui.NativeMenuItemCfg{ID: "quit", Text: "Quit peekai"},
 	)
+}
+
+// themeItems lists the themes with a check on the current one.
+func (o *Overlay) themeItems() []gui.NativeMenuItemCfg {
+	o.mu.Lock()
+	names, current := theme.Names(o.uiCfg), o.pal.Name
+	system := o.themeSel == "system" || (o.themeSel == "" && o.uiCfg.Theme == "system")
+	o.mu.Unlock()
+	items := make([]gui.NativeMenuItemCfg, 0, len(names))
+	for _, n := range names {
+		checked := n == current && !system
+		if n == "system" {
+			checked = system
+		}
+		items = append(items, gui.NativeMenuItemCfg{ID: trayThemeID + n, Text: n, Checked: checked})
+	}
+	return items
 }
 
 // modelItems lists the configured models as "name — description", with
