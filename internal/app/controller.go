@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"maps"
 	"slices"
+	"time"
 
 	"github.com/Miwm64/peekai/internal/config"
 	"github.com/Miwm64/peekai/internal/pipeline"
@@ -17,16 +18,14 @@ import (
 
 // Action names, matching the keys of config.Hotkeys.Bindings.
 const (
-	ActCapture       = "capture"
-	ActCapturePopup  = "capture_popup"
-	ActCaptureTicker = "capture_ticker"
-	ActTogglePopup   = "toggle_popup"
-	ActToggleTicker  = "toggle_ticker"
-	ActHideAll       = "hide_all"
-	ActCyclePrompt   = "cycle_prompt"
-	ActToggleMode    = "toggle_mode"
-	ActCopyResult    = "copy_result"
-	ActQuit          = "quit"
+	ActCapture      = "capture"
+	ActTogglePopup  = "toggle_popup"
+	ActToggleTicker = "toggle_ticker"
+	ActHideAll      = "hide_all"
+	ActCyclePrompt  = "cycle_prompt"
+	ActToggleMode   = "toggle_mode"
+	ActCopyResult   = "copy_result"
+	ActQuit         = "quit"
 )
 
 // Deps are the controller's collaborators.
@@ -38,15 +37,18 @@ type Deps struct {
 	Clipboard func(text string) error
 }
 
+// Controller runs analyses on the capture shortcut and opens or closes
+// windows only on their toggle shortcuts; results update the windows'
+// content without opening them.
 type Controller struct {
 	deps    Deps
-	output  ui.View
 	mode    string
 	prompts map[string]string
 	names   []string // sorted prompt names, for cycling
 	active  string
 
-	last    string
+	content ui.Content // what the windows display
+	last    string     // last answer, for copy
 	visible map[ui.View]bool
 
 	runID   int
@@ -55,16 +57,16 @@ type Controller struct {
 }
 
 type result struct {
-	id   int
-	view ui.View
-	res  pipeline.Result
-	err  error
+	id     int
+	prompt string
+	mode   string
+	res    pipeline.Result
+	err    error
 }
 
 func New(cfg config.Config, deps Deps) *Controller {
 	return &Controller{
 		deps:    deps,
-		output:  ui.ParseView(cfg.Output),
 		mode:    cfg.Mode,
 		prompts: cfg.Prompts.List,
 		names:   slices.Sorted(maps.Keys(cfg.Prompts.List)),
@@ -77,6 +79,8 @@ func New(cfg config.Config, deps Deps) *Controller {
 // Run handles actions until quit, ctx is done or actions is closed.
 func (c *Controller) Run(ctx context.Context, actions <-chan string) error {
 	defer c.stop()
+	c.content = ui.Content{State: ui.Idle, Prompt: c.active, Mode: c.mode}
+	c.deps.UI.Update(c.content)
 	for {
 		select {
 		case <-ctx.Done():
@@ -95,17 +99,14 @@ func (c *Controller) Run(ctx context.Context, actions <-chan string) error {
 func (c *Controller) handle(ctx context.Context, action string) {
 	switch action {
 	case ActCapture:
-		c.start(ctx, c.output)
-	case ActCapturePopup:
-		c.start(ctx, ui.Popup)
-	case ActCaptureTicker:
-		c.start(ctx, ui.Ticker)
+		c.start(ctx)
 	case ActTogglePopup:
 		c.toggle(ui.Popup)
 	case ActToggleTicker:
 		c.toggle(ui.Ticker)
 	case ActHideAll:
-		c.stop()
+		// Only hides; a running analysis continues and its answer is
+		// there next time a window is opened.
 		for _, v := range []ui.View{ui.Popup, ui.Ticker} {
 			if c.visible[v] {
 				c.deps.UI.Hide(v)
@@ -116,6 +117,7 @@ func (c *Controller) handle(ctx context.Context, action string) {
 		i := slices.Index(c.names, c.active)
 		c.active = c.names[(i+1)%len(c.names)]
 		c.deps.UI.Notify("prompt: " + c.active)
+		c.refreshIdle()
 	case ActToggleMode:
 		if c.mode == config.ModeOCR {
 			c.mode = config.ModeImage
@@ -123,6 +125,7 @@ func (c *Controller) handle(ctx context.Context, action string) {
 			c.mode = config.ModeOCR
 		}
 		c.deps.UI.Notify("mode: " + c.mode)
+		c.refreshIdle()
 	case ActCopyResult:
 		c.copyLast()
 	default:
@@ -130,8 +133,9 @@ func (c *Controller) handle(ctx context.Context, action string) {
 	}
 }
 
-// start cancels any running analysis and begins a new one shown in v.
-func (c *Controller) start(ctx context.Context, v ui.View) {
+// start cancels any running analysis and begins a new one. It changes the
+// windows' content to "thinking" but never opens a window.
+func (c *Controller) start(ctx context.Context) {
 	c.stop()
 	if c.mode == config.ModeOCR && c.deps.Pipeline.OCR == nil {
 		engine, err := c.deps.NewOCR()
@@ -147,13 +151,15 @@ func (c *Controller) start(ctx context.Context, v ui.View) {
 	runCtx, cancel := context.WithCancel(ctx)
 	c.cancel = cancel
 	p := c.deps.Pipeline // copy: the goroutine never sees later changes
-	opts := pipeline.Options{Mode: c.mode, Prompt: c.prompts[c.active]}
+	prompt, mode := c.active, c.mode
+	opts := pipeline.Options{Mode: mode, Prompt: c.prompts[prompt]}
 
-	c.deps.UI.Busy(true)
+	c.content = ui.Content{State: ui.Thinking, Text: c.last, Prompt: prompt, Mode: mode}
+	c.deps.UI.Update(c.content)
 	go func() {
 		res, err := p.Run(runCtx, opts)
 		select {
-		case c.results <- result{id: id, view: v, res: res, err: err}:
+		case c.results <- result{id: id, prompt: prompt, mode: mode, res: res, err: err}:
 		case <-runCtx.Done(): // cancelled or controller stopped: nobody listens
 		}
 	}()
@@ -165,15 +171,24 @@ func (c *Controller) finish(r result) {
 	}
 	c.cancel()
 	c.cancel = nil
-	c.deps.UI.Busy(false)
 	switch {
 	case errors.Is(r.err, context.Canceled):
+		return
 	case r.err != nil:
+		c.content = ui.Content{State: ui.Failed, Text: r.err.Error(), Prompt: r.prompt, Mode: r.mode}
 		c.deps.UI.Notify("error: " + r.err.Error())
 	default:
 		c.last = r.res.Answer
-		c.deps.UI.Show(r.view, c.last)
-		c.visible[r.view] = true
+		c.content = ui.Content{State: ui.Ready, Text: c.last, Prompt: r.prompt, Mode: r.mode, At: time.Now()}
+	}
+	c.deps.UI.Update(c.content)
+}
+
+// refreshIdle shows the new prompt/mode while nothing has been captured.
+func (c *Controller) refreshIdle() {
+	if c.content.State == ui.Idle {
+		c.content.Prompt, c.content.Mode = c.active, c.mode
+		c.deps.UI.Update(c.content)
 	}
 }
 
@@ -185,19 +200,16 @@ func (c *Controller) stop() {
 	c.cancel()
 	c.cancel = nil
 	c.runID++ // drop its result when it arrives
-	c.deps.UI.Busy(false)
 }
 
+// toggle opens or closes a window. It always opens, even before the first
+// answer: the window then shows "thinking" or "no result yet".
 func (c *Controller) toggle(v ui.View) {
-	switch {
-	case c.visible[v]:
+	c.visible[v] = !c.visible[v]
+	if c.visible[v] {
+		c.deps.UI.Show(v)
+	} else {
 		c.deps.UI.Hide(v)
-		c.visible[v] = false
-	case c.last == "":
-		c.deps.UI.Notify("nothing to show yet")
-	default:
-		c.deps.UI.Show(v, c.last)
-		c.visible[v] = true
 	}
 }
 

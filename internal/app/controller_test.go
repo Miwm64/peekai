@@ -3,7 +3,6 @@ package app
 import (
 	"context"
 	"errors"
-	"fmt"
 	"image"
 	"strings"
 	"testing"
@@ -18,10 +17,10 @@ import (
 // recorder is a ui.Presenter that reports every call on a channel.
 type recorder struct{ calls chan string }
 
-func (r *recorder) Show(v ui.View, text string) { r.calls <- fmt.Sprintf("show %s: %s", v, text) }
-func (r *recorder) Hide(v ui.View)              { r.calls <- "hide " + v.String() }
-func (r *recorder) Busy(on bool)                { r.calls <- fmt.Sprint("busy ", on) }
-func (r *recorder) Notify(msg string)           { r.calls <- "notify " + msg }
+func (r *recorder) Update(c ui.Content) { r.calls <- "update " + c.Header() + " | " + c.Text }
+func (r *recorder) Show(v ui.View)      { r.calls <- "show " + v.String() }
+func (r *recorder) Hide(v ui.View)      { r.calls <- "hide " + v.String() }
+func (r *recorder) Notify(msg string)   { r.calls <- "notify " + msg }
 
 type screen struct{}
 
@@ -75,6 +74,7 @@ func start(t *testing.T, mutate func(*config.Config)) *harness {
 		Clipboard: func(s string) error { h.copied = s; return nil },
 	})
 	go func() { h.done <- c.Run(context.Background(), h.actions) }()
+	h.expect("update no result yet · " + cfg.Prompts.Active + " · image | ")
 	t.Cleanup(func() {
 		select {
 		case h.actions <- ActQuit:
@@ -102,28 +102,51 @@ func (h *harness) expect(want ...string) {
 	}
 }
 
-func TestCaptureShowsInDefaultView(t *testing.T) {
-	h := start(t, func(c *config.Config) { c.Output = config.OutputTicker })
-	h.send(ActCapture)
-	h.expect("busy true", "busy false", "show ticker: A/image")
+// ready matches the Update for a finished answer (its time varies).
+func (h *harness) expectReady(text string) {
+	h.t.Helper()
+	select {
+	case got := <-h.calls:
+		if !strings.HasPrefix(got, "update ✓ answer") || !strings.HasSuffix(got, "| "+text) {
+			h.t.Fatalf("ui call = %q, want ready %q", got, text)
+		}
+	case <-time.After(2 * time.Second):
+		h.t.Fatalf("timed out waiting for answer %q", text)
+	}
 }
 
-func TestCaptureToSpecificViewsAndToggle(t *testing.T) {
+func TestCaptureNeverOpensWindows(t *testing.T) {
 	h := start(t, nil)
-	h.send(ActCapturePopup)
-	h.expect("busy true", "busy false", "show popup: A/image")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
+	select {
+	case got := <-h.calls:
+		t.Fatalf("unexpected ui call after capture: %q", got)
+	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+func TestToggleOpensAndCloses(t *testing.T) {
+	h := start(t, nil)
+	h.send(ActTogglePopup) // opens even before any answer
+	h.expect("show popup")
+	h.send(ActCapture) // open window gets the new content
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
 	h.send(ActTogglePopup)
 	h.expect("hide popup")
 	h.send(ActToggleTicker)
-	h.expect("show ticker: A/image")
+	h.expect("show ticker")
 	h.send(ActHideAll)
 	h.expect("hide ticker")
+	h.send(ActHideAll) // nothing open: no calls
+	h.send(ActCopyResult)
+	h.expect("notify copied to clipboard")
 }
 
-func TestToggleBeforeAnyResult(t *testing.T) {
+func TestCopyBeforeAnyResult(t *testing.T) {
 	h := start(t, nil)
-	h.send(ActTogglePopup)
-	h.expect("notify nothing to show yet")
 	h.send(ActCopyResult)
 	h.expect("notify nothing to copy yet")
 }
@@ -131,57 +154,55 @@ func TestToggleBeforeAnyResult(t *testing.T) {
 func TestCyclePromptAndToggleMode(t *testing.T) {
 	h := start(t, nil)
 	h.send(ActCyclePrompt)
-	h.expect("notify prompt: b")
+	h.expect("notify prompt: b", "update no result yet · b · image | ")
 	h.send(ActToggleMode)
-	h.expect("notify mode: ocr")
-	h.send(ActCapturePopup)
-	h.expect("busy true", "busy false", "show popup: B/text:words")
+	h.expect("notify mode: ocr", "update no result yet · b · ocr | ")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · b · ocr | ")
+	h.expectReady("B/text:words")
+	h.send(ActCyclePrompt) // after an answer, only a notice
+	h.expect("notify prompt: fail")
 }
 
-func TestHideAllCancelsRun(t *testing.T) {
-	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
-	h.send(ActCapture)
-	h.expect("busy true")
-	h.send(ActHideAll)
-	h.expect("busy false")
-	// The cancelled run must not show anything afterwards.
+func TestHideAllKeepsRunning(t *testing.T) {
+	h := start(t, nil)
 	h.send(ActTogglePopup)
-	h.expect("notify nothing to show yet")
+	h.expect("show popup")
+	h.send(ActCapture)
+	h.expect("update ● thinking… · a · image | ")
+	h.send(ActHideAll)
+	// Order of hide vs. answer depends on timing; both must arrive.
+	got := map[string]bool{}
+	for range 2 {
+		select {
+		case c := <-h.calls:
+			got[strings.SplitN(c, " ·", 2)[0]] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("timed out, got %v", got)
+		}
+	}
+	if !got["hide popup"] || !got["update ✓ answer"] {
+		t.Errorf("calls = %v", got)
+	}
 }
 
 func TestRetriggerReplacesRun(t *testing.T) {
 	h := start(t, func(c *config.Config) { c.Prompts.Active = "slow" })
 	h.send(ActCapture)
-	h.expect("busy true")
+	h.expect("update ● thinking… · slow · image | ")
 	h.send(ActCyclePrompt) // slow → a (sorted: a, b, fail, slow)
 	h.expect("notify prompt: a")
 	h.send(ActCapture)
-	h.expect("busy false", "busy true", "busy false", "show popup: A/image")
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
 }
 
-func TestErrorIsNotified(t *testing.T) {
+func TestErrorIsShownAsContent(t *testing.T) {
 	h := start(t, func(c *config.Config) { c.Prompts.Active = "fail" })
 	h.send(ActCapture)
-	h.expect("busy true", "busy false")
-	select {
-	case got := <-h.calls:
-		if !strings.HasPrefix(got, "notify error: ai: boom") {
-			t.Errorf("got %q", got)
-		}
-	case <-time.After(2 * time.Second):
-		t.Fatal("no error notification")
-	}
-}
-
-func TestCopyResult(t *testing.T) {
-	h := start(t, nil)
-	h.send(ActCapture)
-	h.expect("busy true", "busy false", "show popup: A/image")
-	h.send(ActCopyResult)
-	h.expect("notify copied to clipboard")
-	if h.copied != "A/image" {
-		t.Errorf("copied %q", h.copied)
-	}
+	h.expect("update ● thinking… · fail · image | ",
+		"notify error: ai: boom",
+		"update ✕ failed · fail · image | ai: boom")
 }
 
 func TestQuitStopsRun(t *testing.T) {

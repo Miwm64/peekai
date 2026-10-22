@@ -78,8 +78,8 @@ func run() error {
 	if err := cfg.Validate(); err != nil {
 		return err
 	}
-	fmt.Printf("config: %s (mode=%s, output=%s, provider=%s, model=%s)\n",
-		path, cfg.Mode, cfg.Output, cfg.AI.Provider, cfg.AI.Model)
+	fmt.Printf("config: %s (mode=%s, provider=%s, model=%s)\n",
+		path, cfg.Mode, cfg.AI.Provider, cfg.AI.Model)
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer stop()
