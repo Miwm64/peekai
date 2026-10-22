@@ -89,7 +89,7 @@ func run() error {
 	}
 
 	listen := func(presenter ui.Presenter) error {
-		err := runHotkeys(ctx, cfg, presenter)
+		err := listenWithReload(ctx, path, cfg, presenter)
 		if errors.Is(err, context.Canceled) {
 			return nil // Ctrl+C
 		}
@@ -119,11 +119,48 @@ func build(cfg config.Config) (pipeline.Pipeline, ai.Provider, error) {
 	return pipeline.Pipeline{Capturer: capturer, AI: provider, MaxImagePx: cfg.AI.MaxImagePx}, provider, nil
 }
 
-// runHotkeys keeps running and reacts to the global hotkeys.
-func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter) error {
+// listenWithReload runs the hotkey controller and restarts it with a
+// freshly loaded config on reload_config. A config that doesn't load or
+// start is reported and the previous one keeps running.
+func listenWithReload(ctx context.Context, path string, cfg config.Config, presenter ui.Presenter) error {
+	var restore *app.Snapshot
+	prev := cfg
+	reloaded := false
+	for {
+		snap, err := runHotkeys(ctx, cfg, presenter, restore)
+		switch {
+		case errors.Is(err, app.ErrReload):
+			restore = &snap
+			next, _, lerr := config.Load(path)
+			if lerr != nil {
+				presenter.Notify("reload failed, keeping the old config: " + lerr.Error())
+				continue
+			}
+			prev, cfg, reloaded = cfg, next, true
+			if s, ok := presenter.(interface{ SetUI(config.UI) }); ok {
+				s.SetUI(cfg.UI)
+			}
+			presenter.Notify("config reloaded")
+		case err != nil && reloaded && !errors.Is(err, context.Canceled):
+			// The new config loaded but couldn't start (e.g. a hotkey clash).
+			presenter.Notify("new config failed, back to the old one: " + err.Error())
+			cfg, reloaded = prev, false
+			if s, ok := presenter.(interface{ SetUI(config.UI) }); ok {
+				s.SetUI(cfg.UI)
+			}
+		default:
+			return err
+		}
+	}
+}
+
+// runHotkeys keeps running and reacts to the global hotkeys (and tray
+// clicks) until quit, Ctrl+C or a reload request. On reload it returns the
+// controller's snapshot with app.ErrReload.
+func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter, restore *app.Snapshot) (app.Snapshot, error) {
 	p, provider, err := build(cfg)
 	if err != nil {
-		return err
+		return app.Snapshot{}, err
 	}
 	// Keep our own windows out of the screenshots.
 	if g, ok := presenter.(interface {
@@ -133,7 +170,7 @@ func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter) 
 	}
 	listener, err := hotkey.Listen(cfg.Hotkeys.Bindings())
 	if err != nil {
-		return err
+		return app.Snapshot{}, err
 	}
 	defer listener.Close()
 
@@ -154,6 +191,7 @@ func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter) 
 		NewOCR:    func(current ai.Provider) (pipeline.Recognizer, error) { return ocr.New(cfg.OCR, current) },
 		UI:        presenter,
 		Clipboard: clipboard.WriteAll,
+		Restore:   restore,
 	})
 
 	bindings := cfg.Hotkeys.Bindings()
@@ -161,7 +199,41 @@ func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter) 
 	for _, action := range slices.Sorted(maps.Keys(bindings)) {
 		fmt.Printf("  %-15s %s\n", action, bindings[action])
 	}
-	return c.Run(ctx, listener.Events())
+	// The forwarders stop with this run, so after a reload only the new
+	// controller receives tray clicks.
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	actions := listener.Events()
+	if t, ok := presenter.(interface{ Actions() <-chan string }); ok {
+		actions = merge(runCtx, actions, t.Actions())
+	}
+	err = c.Run(ctx, actions)
+	return c.Snapshot(), err
+}
+
+// merge forwards from both channels until ctx is done.
+func merge(ctx context.Context, a, b <-chan string) <-chan string {
+	out := make(chan string)
+	forward := func(in <-chan string) {
+		for {
+			select {
+			case v, ok := <-in:
+				if !ok {
+					return
+				}
+				select {
+				case out <- v:
+				case <-ctx.Done():
+					return
+				}
+			case <-ctx.Done():
+				return
+			}
+		}
+	}
+	go forward(a)
+	go forward(b)
+	return out
 }
 
 // runOnce analyzes the screen once and prints the answer.
