@@ -170,6 +170,15 @@ func TestPresetDefaults(t *testing.T) {
 	if got := p.(*openAI).baseURL; got != "https://router.requesty.ai/v1" {
 		t.Errorf("requesty baseURL = %s", got)
 	}
+
+	t.Setenv("GEMINI_API_KEY", "k")
+	p, err = New(cfgFor("gemini", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*openAI).baseURL; got != "https://generativelanguage.googleapis.com/v1beta/openai" {
+		t.Errorf("gemini baseURL = %s", got)
+	}
 }
 
 func TestCancel(t *testing.T) {
