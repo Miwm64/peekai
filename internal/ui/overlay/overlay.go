@@ -5,7 +5,9 @@
 package overlay
 
 import (
+	"context"
 	"fmt"
+	"image"
 	"os"
 	"strings"
 	"sync"
@@ -14,6 +16,7 @@ import (
 	"github.com/go-gui-org/go-gui/gui"
 	"github.com/go-gui-org/go-gui/gui/backend"
 
+	"github.com/Miwm64/peekai/internal/capture"
 	"github.com/Miwm64/peekai/internal/config"
 	"github.com/Miwm64/peekai/internal/ui"
 	"github.com/Miwm64/peekai/internal/ui/ontop"
@@ -355,5 +358,62 @@ func (o *Overlay) statusView(w *gui.Window) gui.View {
 			Mode:      gui.TextModeSingleLine,
 			TextStyle: gui.TextStyle{Size: 14, Color: fg},
 		})},
+	})
+}
+
+// GuardCapture keeps the overlay out of screenshots taken by c. macOS and
+// Windows exclude our windows themselves; elsewhere (X11) the open windows
+// are hidden for the moment of the capture.
+func (o *Overlay) GuardCapture(c capture.Capturer) capture.Capturer {
+	if ontop.ExcludesFromCapture {
+		return c
+	}
+	return guarded{o: o, next: c}
+}
+
+type guarded struct {
+	o    *Overlay
+	next capture.Capturer
+}
+
+// compositorDelay lets the window manager remove hidden windows from the
+// screen before the capture reads it.
+const compositorDelay = 80 * time.Millisecond
+
+func (g guarded) Capture(ctx context.Context) (image.Image, error) {
+	titles := []string{popupTitle, tickerTitle, statusTitle}
+	hidden := make(chan struct{})
+	g.o.onMain(func() {
+		for _, t := range titles {
+			ontop.Hide(t)
+		}
+		close(hidden)
+	})
+	select {
+	case <-hidden:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	time.Sleep(compositorDelay)
+	defer g.o.restore()
+	return g.next.Capture(ctx)
+}
+
+// restore shows again the windows that were open before a guarded capture.
+func (o *Overlay) restore() {
+	o.mu.Lock()
+	popup, ticker := o.visible[ui.Popup], o.visible[ui.Ticker]
+	status := o.cfg.Status.Enabled && o.content.State == ui.Thinking
+	o.mu.Unlock()
+	o.onMain(func() {
+		if popup {
+			ontop.Show(popupTitle)
+		}
+		if ticker {
+			ontop.Show(tickerTitle)
+		}
+		if status {
+			ontop.Show(statusTitle)
+		}
 	})
 }

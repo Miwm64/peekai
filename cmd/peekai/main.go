@@ -125,6 +125,12 @@ func runHotkeys(ctx context.Context, cfg config.Config, presenter ui.Presenter) 
 	if err != nil {
 		return err
 	}
+	// Keep our own windows out of the screenshots.
+	if g, ok := presenter.(interface {
+		GuardCapture(capture.Capturer) capture.Capturer
+	}); ok {
+		p.Capturer = g.GuardCapture(p.Capturer)
+	}
 	listener, err := hotkey.Listen(cfg.Hotkeys.Bindings())
 	if err != nil {
 		return err
