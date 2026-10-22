@@ -325,12 +325,16 @@ func (o *Overlay) popupView(w *gui.Window) gui.View {
 
 func (o *Overlay) tickerView(w *gui.Window) gui.View {
 	st := gui.State[tickerState](w)
+	// Both rows fill the bar's height and center their content vertically,
+	// so the text sits in the middle whatever ui.ticker.height is.
 	return gui.Row(gui.ContainerCfg{
-		Sizing:  gui.FillFill,
-		Color:   bg(o.cfg.Ticker.Opacity),
-		Padding: gui.PadVH(6, 0),
-		Clip:    true,
+		Sizing: gui.FillFill,
+		Color:  bg(o.cfg.Ticker.Opacity),
+		VAlign: gui.VAlignMiddle,
+		Clip:   true,
 		Content: []gui.View{gui.Row(gui.ContainerCfg{
+			Sizing:      gui.FitFill,
+			VAlign:      gui.VAlignMiddle,
 			TransformFn: func() gui.Transform { return gui.Translate(-gui.State[tickerState](w).offset, 0) },
 			Content:     []gui.View{gui.Text(gui.TextCfg{Text: st.text, Mode: gui.TextModeSingleLine, TextStyle: tickerStyle()})},
 		})},
@@ -342,7 +346,8 @@ func (o *Overlay) statusView(w *gui.Window) gui.View {
 		Sizing:  gui.FillFill,
 		Color:   bg(0.85),
 		Radius:  gui.RadiusPx(17),
-		Padding: gui.PadVH(7, 14),
+		Padding: gui.PadVH(0, 14),
+		VAlign:  gui.VAlignMiddle,
 		Content: []gui.View{gui.Text(gui.TextCfg{
 			Text:      gui.State[textState](w).text,
 			Mode:      gui.TextModeSingleLine,
