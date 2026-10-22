@@ -12,15 +12,17 @@ type Capturer interface {
 	Capture(ctx context.Context) (image.Image, error)
 }
 
-// rectFor picks the area to capture from the display bounds. "active" is
-// the display under the mouse (the primary one if the mouse position is
-// unknown).
+// rectFor picks the area to capture from the display bounds. "mouse" is
+// the display under the mouse (the main one if the mouse position is
+// unknown); "main" is always the main display.
 func rectFor(display string, bounds []image.Rectangle, mouse image.Point, mouseOK bool) (image.Rectangle, error) {
 	if len(bounds) == 0 {
 		return image.Rectangle{}, fmt.Errorf("no active displays found")
 	}
 	switch display {
-	case "active":
+	case "main":
+		return bounds[0], nil
+	case "mouse":
 		if mouseOK {
 			for _, b := range bounds {
 				if mouse.In(b) {
