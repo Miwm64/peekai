@@ -44,6 +44,15 @@ const (
 
 type rect32 struct{ Left, Top, Right, Bottom int32 }
 
+// call runs a Win32 function and returns its result. The error from
+// LazyProc.Call is GetLastError, which is only meaningful when the result
+// says the call failed; window styling and placement are best effort, so
+// callers that care check the result instead.
+func call(p *syscall.LazyProc, args ...uintptr) uintptr {
+	r, _, _ := p.Call(args...)
+	return r
+}
+
 // find returns our process's top-level window with this title.
 func find(title string) uintptr {
 	t, err := syscall.UTF16PtrFromString(title)
@@ -55,7 +64,7 @@ func find(title string) uintptr {
 		return 0
 	}
 	var pid uint32
-	procGetWindowThreadPID.Call(hwnd, uintptr(unsafe.Pointer(&pid)))
+	call(procGetWindowThreadPID, hwnd, uintptr(unsafe.Pointer(&pid)))
 	if int(pid) != os.Getpid() {
 		return 0
 	}
@@ -72,24 +81,24 @@ func place(title string, r Rect, opts Options) bool {
 	if opts.ClickThrough {
 		if ex&wsExLayered == 0 {
 			ex |= wsExLayered
-			procSetWindowLongPtrW.Call(hwnd, gwlExStyle, ex)
+			call(procSetWindowLongPtrW, hwnd, gwlExStyle, ex)
 			// A layered window is invisible until it gets attributes.
-			procSetLayeredAttributes.Call(hwnd, 0, 255, lwaAlpha)
+			call(procSetLayeredAttributes, hwnd, 0, 255, lwaAlpha)
 		}
 		ex |= wsExTransparent
 	} else {
 		ex &^= wsExTransparent
 	}
-	procSetWindowLongPtrW.Call(hwnd, gwlExStyle, ex)
+	call(procSetWindowLongPtrW, hwnd, gwlExStyle, ex)
 	// Keep our overlay out of screenshots and screen recordings.
-	procSetDisplayAffinity.Call(hwnd, wdaExcludeCapture)
+	call(procSetDisplayAffinity, hwnd, wdaExcludeCapture)
 
 	// Sizes are logical; Windows positions in physical pixels.
 	scale := 1.0
 	if dpi, _, _ := procGetDpiForWindow.Call(hwnd); dpi != 0 {
 		scale = float64(dpi) / 96
 	}
-	procSetWindowPos.Call(hwnd, hwndTopmost,
+	call(procSetWindowPos, hwnd, hwndTopmost,
 		uintptr(int32(r.X)), uintptr(int32(r.Y)),
 		uintptr(int32(r.W*scale)), uintptr(int32(r.H*scale)),
 		swpNoActivate|swpFrameChanged)
@@ -102,11 +111,11 @@ func setVisible(title string, visible bool) bool {
 		return false
 	}
 	if !visible {
-		procShowWindow.Call(hwnd, swHide)
+		call(procShowWindow, hwnd, swHide)
 		return true
 	}
-	procShowWindow.Call(hwnd, swShowNoActivate)
-	procSetWindowPos.Call(hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
+	call(procShowWindow, hwnd, swShowNoActivate)
+	call(procSetWindowPos, hwnd, hwndTopmost, 0, 0, 0, 0, swpNoMove|swpNoSize|swpNoActivate|swpShowWindow)
 	return true
 }
 
@@ -119,7 +128,9 @@ const excludesFromCapture = true
 // mouse, in physical pixels.
 func screen() Rect {
 	var pt struct{ X, Y int32 }
-	procGetCursorPos.Call(uintptr(unsafe.Pointer(&pt)))
+	if call(procGetCursorPos, uintptr(unsafe.Pointer(&pt))) == 0 {
+		return Rect{W: 1280, H: 720}
+	}
 	mon, _, _ := procMonitorFromPoint.Call(uintptr(uint32(pt.X))|uintptr(uint32(pt.Y))<<32, monitorNearest)
 	info := struct {
 		Size    uint32
