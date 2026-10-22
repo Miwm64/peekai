@@ -152,6 +152,15 @@ func TestPresetDefaults(t *testing.T) {
 	if got := p.(*openAI).baseURL; got != "https://api.x.ai/v1" {
 		t.Errorf("grok baseURL = %s", got)
 	}
+
+	t.Setenv("OPENROUTER_API_KEY", "k")
+	p, err = New(cfgFor("openrouter", ""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := p.(*openAI).baseURL; got != "https://openrouter.ai/api/v1" {
+		t.Errorf("openrouter baseURL = %s", got)
+	}
 }
 
 func TestCancel(t *testing.T) {

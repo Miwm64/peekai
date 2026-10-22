@@ -24,6 +24,7 @@ var presets = map[string]preset{
 	"ollama":        {baseURL: "http://localhost:11434/v1"},
 	"routerai":      {baseURL: "https://routerai.ru/api/v1", keyEnv: "ROUTERAI_API_KEY"},
 	"grok":          {baseURL: "https://api.x.ai/v1", keyEnv: "XAI_API_KEY"},
+	"openrouter":    {baseURL: "https://openrouter.ai/api/v1", keyEnv: "OPENROUTER_API_KEY"},
 	"openai_compat": {}, // generic: base_url from config, key optional
 }
 
