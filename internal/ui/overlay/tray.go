@@ -1,16 +1,13 @@
 package overlay
 
 import (
-	"bytes"
 	"fmt"
-	"image"
-	"image/color"
-	"image/png"
 	"os"
 	"strings"
 
 	"github.com/go-gui-org/go-gui/gui"
 
+	"github.com/Miwm64/peekai/internal/icon"
 	"github.com/Miwm64/peekai/internal/ui"
 	"github.com/Miwm64/peekai/internal/ui/theme"
 )
@@ -137,32 +134,5 @@ func modelItems(c ui.Content) []gui.NativeMenuItemCfg {
 	return items
 }
 
-// trayIcon is a small eye: blue disc, white eye, dark pupil. Coloured
-// rather than a black template so it shows on light and dark menu bars.
-var trayIcon = func() []byte {
-	const n = 44
-	img := image.NewNRGBA(image.Rect(0, 0, n, n))
-	blue := color.NRGBA{R: 76, G: 154, B: 255, A: 255}
-	white := color.NRGBA{R: 255, G: 255, B: 255, A: 255}
-	dark := color.NRGBA{R: 20, G: 24, B: 32, A: 255}
-	c := float64(n-1) / 2
-	for y := range n {
-		for x := range n {
-			dx, dy := float64(x)-c, float64(y)-c
-			d2 := dx*dx + dy*dy
-			// The eye's white is a flattened circle.
-			ey := dy * 1.7
-			switch {
-			case d2 <= 5*5:
-				img.Set(x, y, dark)
-			case dx*dx+ey*ey <= 15*15:
-				img.Set(x, y, white)
-			case d2 <= 21*21:
-				img.Set(x, y, blue)
-			}
-		}
-	}
-	var buf bytes.Buffer
-	_ = png.Encode(&buf, img)
-	return buf.Bytes()
-}()
+// trayIcon is the peeking cat, sized for menu bars and notification areas.
+var trayIcon = icon.PNG(44, false)
