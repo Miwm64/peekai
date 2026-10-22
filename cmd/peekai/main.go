@@ -110,25 +110,33 @@ func run() error {
 	return nil
 }
 
-// defaultModel returns the config's default model with its provider.
-func defaultModel(cfg config.Config) config.ResolvedModel {
+// defaultModel returns the config's default model with its provider; ok
+// is false when no models are configured yet.
+func defaultModel(cfg config.Config) (config.ResolvedModel, bool) {
 	for _, m := range cfg.ResolvedModels() {
 		if m.Name == cfg.AI.DefaultModel {
-			return m
+			return m, true
 		}
 	}
-	panic("validated config has no default model") // Validate guarantees it
+	return config.ResolvedModel{}, false
 }
 
-// build creates the pipeline and the client for the default model.
+// build creates the pipeline and the client for the default model. With no
+// models configured the client is nil; the controller explains that.
 func build(cfg config.Config) (pipeline.Pipeline, ai.Provider, error) {
 	capturer, err := capture.New(cfg.Capture)
 	if err != nil {
 		return pipeline.Pipeline{}, nil, err
 	}
-	provider, err := ai.New(defaultModel(cfg))
-	if err != nil {
-		return pipeline.Pipeline{}, nil, err
+	// A default model that can't start (e.g. its API key isn't set yet)
+	// doesn't stop peekai: the controller reports it on capture, and the
+	// key can be added in Settings.
+	var provider ai.Provider
+	if m, ok := defaultModel(cfg); ok {
+		if provider, err = ai.New(m); err != nil {
+			fmt.Fprintln(os.Stderr, "peekai:", err)
+			provider = nil
+		}
 	}
 	return pipeline.Pipeline{Capturer: capturer, AI: provider, MaxImagePx: cfg.Capture.MaxImagePx}, provider, nil
 }
@@ -254,7 +262,13 @@ func runOnce(ctx context.Context, cfg config.Config, out string) error {
 	if err != nil {
 		return err
 	}
-	m := defaultModel(cfg)
+	m, ok := defaultModel(cfg)
+	if !ok {
+		return errors.New("no model configured: add one in Settings (tray icon) or in ai.models")
+	}
+	if provider == nil { // build reported why
+		return fmt.Errorf("model %q can't start", m.Name)
+	}
 	if cfg.Capture.Mode == config.ModeImage && !m.Vision {
 		return fmt.Errorf("model %q can't read images: use -mode ocr or a vision model (-model)", m.Name)
 	}

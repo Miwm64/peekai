@@ -189,7 +189,9 @@ func New(cfg config.Config, deps Deps) *Controller {
 		results:   make(chan result),
 	}
 	c.aiIdx = max(0, c.modelIndex(cfg.AI.DefaultModel))
-	c.aiBuilt[c.aiIdx] = deps.Pipeline.AI
+	if deps.Pipeline.AI != nil { // nil: couldn't start; retried on capture
+		c.aiBuilt[c.aiIdx] = deps.Pipeline.AI
+	}
 	return c
 }
 
@@ -274,14 +276,22 @@ func (c *Controller) handle(ctx context.Context, action string) {
 // windows' content to "thinking" but never opens a window.
 func (c *Controller) start(ctx context.Context) {
 	c.stop()
+	if len(c.aiOpts) == 0 {
+		c.refuse("no model yet: open Settings from the peekai tray icon and add a provider and a model")
+		return
+	}
+	if c.deps.Pipeline.AI == nil {
+		p, err := c.client(c.aiIdx)
+		if err != nil {
+			c.refuse(fmt.Sprintf("%s: %v (add the key in Settings)", c.aiOpts[c.aiIdx].Name, err))
+			return
+		}
+		c.deps.Pipeline.AI = p
+	}
 	// Refuse before sending anything: an image to a model that can't read
 	// it only wastes a request.
 	if o := c.aiOpts[c.aiIdx]; c.mode == config.ModeImage && !o.Vision {
-		msg := fmt.Sprintf("model %q can't read images: switch to OCR mode or pick a vision model", o.Name)
-		c.content = ui.Content{State: ui.Failed, Text: msg}
-		c.answer = c.current()
-		c.deps.UI.Notify(msg)
-		c.publish()
+		c.refuse(fmt.Sprintf("model %q can't read images: switch to OCR mode or pick a vision model", o.Name))
 		return
 	}
 	if c.mode == config.ModeOCR && c.deps.Pipeline.OCR == nil {
@@ -342,7 +352,7 @@ func (c *Controller) finish(r result) {
 func (c *Controller) publish() {
 	cur := c.current()
 	c.content.Prompt, c.content.Mode, c.content.Model = cur.prompt, cur.mode, cur.model
-	c.content.Free = c.aiOpts[c.aiIdx].Free
+	c.content.Free = len(c.aiOpts) > 0 && c.aiOpts[c.aiIdx].Free
 	c.content.Models = c.models()
 	done := c.content.State == ui.Ready || c.content.State == ui.Failed
 	c.content.Stale = done && c.answer != cur
@@ -354,7 +364,19 @@ func (c *Controller) publish() {
 }
 
 func (c *Controller) current() settings {
-	return settings{prompt: c.active, mode: c.mode, model: c.aiOpts[c.aiIdx].Name}
+	s := settings{prompt: c.active, mode: c.mode, model: "no model"}
+	if len(c.aiOpts) > 0 {
+		s.model = c.aiOpts[c.aiIdx].Name
+	}
+	return s
+}
+
+// refuse fails a capture before anything is sent, explaining why.
+func (c *Controller) refuse(msg string) {
+	c.content = ui.Content{State: ui.Failed, Text: msg}
+	c.answer = c.current()
+	c.deps.UI.Notify(msg)
+	c.publish()
 }
 
 // models describes the configured models for the windows and tray.

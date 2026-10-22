@@ -63,6 +63,15 @@ type harness struct {
 	done    chan error
 }
 
+// testConfig is the default config with one model, qwen-local.
+func testConfig() config.Config {
+	cfg := config.Default()
+	cfg.AI.Providers = []config.Provider{{Name: "ollama", URL: "http://localhost:11434/v1"}}
+	cfg.AI.Models = []config.Model{{Name: "qwen-local", Provider: "ollama", Model: "q", Vision: true, Free: true}}
+	cfg.AI.DefaultModel = "qwen-local"
+	return cfg
+}
+
 func start(t *testing.T, mutate func(*config.Config)) *harness {
 	return startWith(t, mutate, nil)
 }
@@ -72,8 +81,10 @@ func startWith(t *testing.T, mutate func(*config.Config), deps func(*Deps)) *har
 	cfg := config.Default()
 	cfg.Prompts.List = map[string]string{"a": "A", "b": "B", "slow": "slow", "fail": "fail"}
 	cfg.Prompts.Default = "a"
-	cfg.AI.AutoClear = true           // most tests check one exchange; TestContext covers history
-	cfg.AI.Models = cfg.AI.Models[:1] // just qwen-local; model tests set Deps.AI
+	cfg.AI.AutoClear = true // most tests check one exchange; TestContext covers history
+	// Just qwen-local (see testConfig); model tests set Deps.AI.
+	tc := testConfig()
+	cfg.AI.Providers, cfg.AI.Models, cfg.AI.DefaultModel = tc.AI.Providers, tc.AI.Models, tc.AI.DefaultModel
 	if mutate != nil {
 		mutate(&cfg)
 	}
@@ -89,7 +100,11 @@ func startWith(t *testing.T, mutate func(*config.Config), deps func(*Deps)) *har
 	}
 	c := New(cfg, d)
 	go func() { h.done <- c.Run(context.Background(), h.actions) }()
-	h.expect("update no result yet · " + cfg.Prompts.Default + " · image | ")
+	initial := "update no result yet · " + cfg.Prompts.Default + " · image"
+	if len(cfg.AI.Models) == 0 {
+		initial += " · no model"
+	}
+	h.expect(initial + " | ")
 	t.Cleanup(func() {
 		select {
 		case h.actions <- ActQuit:
@@ -373,7 +388,7 @@ func runUntilReload(t *testing.T, c *Controller, actions ...string) error {
 
 func TestReloadHandsOverState(t *testing.T) {
 	calls := make(chan string, 64)
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Prompts.List = map[string]string{"a": "A", "b": "B"}
 	cfg.Prompts.Default = "a"
 	cfg.AI.AutoClear = false
@@ -425,7 +440,7 @@ func TestReloadHandsOverState(t *testing.T) {
 }
 
 func TestReloadDropsPromptThatNoLongerExists(t *testing.T) {
-	cfg := config.Default()
+	cfg := testConfig()
 	cfg.Prompts.List = map[string]string{"a": "A", "b": "B"}
 	cfg.Prompts.Default = "a"
 	c := New(cfg, Deps{UI: &recorder{calls: make(chan string, 16)}, Pipeline: pipeline.Pipeline{AI: fakeAI{}}})
@@ -494,4 +509,36 @@ func TestSelectModelFromTray(t *testing.T) {
 	h.expect("notify model: g1", "update no result yet · a · image · g1 | ")
 	h.send(ActSelectModel + "nope")
 	h.expect("notify no model named nope")
+}
+
+func TestCaptureWithoutModelsPointsToSettings(t *testing.T) {
+	h := start(t, func(c *config.Config) {
+		c.AI.Providers, c.AI.Models, c.AI.DefaultModel = nil, nil, ""
+	})
+	// Before any model the title says so.
+	h.send(ActCapture)
+	msg := "no model yet: open Settings from the peekai tray icon and add a provider and a model"
+	h.expect("notify "+msg, "update ✕ failed · a · image · no model | "+msg)
+	h.send(ActCycleModel)
+	h.expect("notify only one model configured (add more to ai.models)")
+}
+
+func TestDefaultModelThatCantStartIsReportedOnCapture(t *testing.T) {
+	tries := 0
+	h := startWith(t, nil, func(d *Deps) {
+		d.Pipeline.AI = nil
+		d.AI = []AIOption{{Name: "qwen-local", Vision: true, Free: true, New: func() (ai.Provider, error) {
+			tries++
+			if tries == 1 {
+				return nil, errors.New("set the API key in X_KEY")
+			}
+			return fakeAI{}, nil // key added meanwhile
+		}}}
+	})
+	h.send(ActCapture)
+	msg := "qwen-local: set the API key in X_KEY (add the key in Settings)"
+	h.expect("notify "+msg, "update ✕ failed · a · image | "+msg)
+	h.send(ActCapture) // works once the key is there
+	h.expect("update ● thinking… · a · image | ")
+	h.expectReady("A/image")
 }
